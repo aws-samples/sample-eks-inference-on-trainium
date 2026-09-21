@@ -139,7 +139,7 @@ resource "kubectl_manifest" "job_model_download_s3" {
               emptyDir: {}
   YAML
   depends_on = [
-    kubectl_manifest.mixed-x86_nodepool,
+    kubectl_manifest.karpenter["x86-cpu-nodepool.yaml"],
     module.karpenter,
     module.model_uploader_pod_identity,
     kubectl_manifest.model_uploader_sa,

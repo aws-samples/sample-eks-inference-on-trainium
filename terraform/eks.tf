@@ -19,6 +19,9 @@ module "eks" {
 
   # EKS Addons
   cluster_addons = {
+    # CoreDNS (a Deployment) has no toleration for the `karpenter` taint, so it
+    # stays on the managed node group automatically. The DaemonSet addons below
+    # tolerate all taints and run on every node.
     coredns                   = {}
     eks-node-monitoring-agent = {}
     eks-pod-identity-agent = {
@@ -61,6 +64,11 @@ module "eks" {
       labels = {
         # Used to ensure Karpenter runs on nodes that it does not manage
         "karpenter.sh/controller" = "true"
+      }
+
+      tags = {
+        "auto-stop"   = "no"
+        "auto-delete" = "no"
       }
 
     }

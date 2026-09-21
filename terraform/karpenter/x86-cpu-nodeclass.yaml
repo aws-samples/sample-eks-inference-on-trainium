@@ -1,0 +1,28 @@
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: x86-cpu-karpenter
+spec:
+  amiFamily: AL2023
+  amiSelectorTerms:
+    - name: ${x86_ami_name}
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        deleteOnTermination: true
+        encrypted: true
+        volumeSize: 200Gi
+        volumeType: gp3
+  detailedMonitoring: true
+  role: "${name}-karpenter-node"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${name}"
+    - tags:
+        kubernetes.io/cluster/${name}: "owned"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${name}"
+        kubernetes.io/role/internal-elb: "1"
+  tags:
+    karpenter.sh/discovery: "${name}"

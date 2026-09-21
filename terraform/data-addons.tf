@@ -12,12 +12,16 @@ module "data_addons" {
   enable_aws_neuron_device_plugin = true
 
   aws_neuron_device_plugin_helm_config = {
+    version = "0.1.0"
     # Enable default scheduler
     values = [
       <<-EOT
       devicePlugin:
         tolerations:
         - key: aws.amazon.com/neuron
+          operator: Exists
+          effect: NoSchedule
+        - key: karpenter
           operator: Exists
           effect: NoSchedule
       scheduler:
@@ -27,7 +31,49 @@ module "data_addons" {
       EOT
     ]
   }
-  depends_on = [helm_release.aws_load_balancer_controller]
+
+  #---------------------------------------------------------------
+  # NVIDIA GPU Operator (provides the GPU device plugin + DCGM exporter
+  # for GPU metrics). Driver and container toolkit are disabled because the
+  # EKS-optimized NVIDIA AMI already ships them.
+  #---------------------------------------------------------------
+  enable_nvidia_gpu_operator = true
+
+  nvidia_gpu_operator_helm_config = {
+    version = "v26.7.0"
+    values = [
+      <<-EOT
+      driver:
+        enabled: false
+      toolkit:
+        enabled: false
+      dcgmExporter:
+        enabled: true
+        serviceMonitor:
+          enabled: true
+      daemonsets:
+        tolerations:
+          - key: nvidia.com/gpu
+            operator: Exists
+            effect: NoSchedule
+          - key: karpenter
+            operator: Exists
+            effect: NoSchedule
+      EOT
+    ]
+  }
+
+  #---------------------------------------------------------------
+  # KubeRay Operator (manages RayCluster / RayService / RayJob CRDs).
+  # Runs as a controller Deployment, so it stays on the managed node group.
+  #---------------------------------------------------------------
+  enable_kuberay_operator = true
+
+  kuberay_operator_helm_config = {
+    version = "1.7.1"
+  }
+
+  depends_on = [module.eks]
 }
 ################################################################################
 # Observability Stack (Kube Prometheus Stack + Grafana Operator)
@@ -53,10 +99,15 @@ resource "helm_release" "kube_prometheus_stack" {
     prometheus:
       prometheusSpec:
         serviceMonitorSelectorNilUsesHelmValues: false
+    prometheus-node-exporter:
+      # node-exporter is a DaemonSet that must run on every node, including the
+      # tainted Karpenter pools. Tolerate all taints so metrics cover all nodes.
+      tolerations:
+        - operator: Exists
     EOT
   ]
 
-  depends_on = [module.eks, helm_release.aws_load_balancer_controller]
+  depends_on = [module.eks]
 }
 
 
@@ -75,7 +126,7 @@ resource "helm_release" "grafana_operator" {
     EOT
   ]
 
-  depends_on = [module.eks, helm_release.kube_prometheus_stack, helm_release.aws_load_balancer_controller]
+  depends_on = [module.eks, helm_release.kube_prometheus_stack]
 }
 
 
@@ -92,7 +143,7 @@ resource "kubectl_manifest" "grafana_admin_credentials" {
       admin-password: ${base64encode("notforproductionuse")}
   YAML
 
-  depends_on = [module.eks, helm_release.grafana_operator, helm_release.kube_prometheus_stack]
+  depends_on = [module.eks, helm_release.grafana_operator]
 }
 
 
@@ -120,77 +171,24 @@ resource "kubectl_manifest" "external_grafana" {
   depends_on = [module.eks, helm_release.grafana_operator, kubectl_manifest.grafana_admin_credentials, helm_release.kube_prometheus_stack]
 }
 
-resource "kubectl_manifest" "vllm_grafana_dashboard_config" {
+# Create a ConfigMap for every Grafana dashboard JSON under ./grafana-dashboards.
+# The `grafana_dashboard` label lets the kube-prometheus-stack Grafana sidecar
+# discover and import each dashboard automatically. Drop a new *.json in that
+# folder and it is applied on the next `terraform apply` - no code change needed.
+resource "kubectl_manifest" "grafana_dashboards" {
+  for_each = fileset("${path.module}/grafana-dashboards", "*.json")
+
   server_side_apply = true
   yaml_body         = <<-YAML
     apiVersion: v1
     kind: ConfigMap
     metadata:
-      name: vllm-grafana-dashboard-config
+      name: ${trimsuffix(each.value, ".json")}
       namespace: monitoring
+      labels:
+        grafana_dashboard: "1"
     data:
-      vllm-dashboard.json: ${jsonencode(file("${path.module}/grafana-dashboards/vllm-dashboard.json"))}
-  YAML
-
-  depends_on = [module.eks, helm_release.kube_prometheus_stack]
-}
-
-resource "kubectl_manifest" "ray_default_grafana_dashboard_config" {
-  server_side_apply = true
-  yaml_body         = <<-YAML
-    apiVersion: v1
-    kind: ConfigMap
-    metadata:
-      name: ray-grafana-default-dashboard-config
-      namespace: monitoring
-    data:
-      ray-default-grafana-dashboard.json: ${jsonencode(file("${path.module}/grafana-dashboards/ray-default-grafana-dashboard.json"))}
-  YAML
-
-  depends_on = [module.eks, helm_release.kube_prometheus_stack]
-}
-
-resource "kubectl_manifest" "ray_serve_grafana_dashboard_config" {
-  server_side_apply = true
-  yaml_body         = <<-YAML
-    apiVersion: v1
-    kind: ConfigMap
-    metadata:
-      name: ray-grafana-serve-dashboard-config
-      namespace: monitoring
-    data:
-      ray-serve-grafana-dashboard.json: ${jsonencode(file("${path.module}/grafana-dashboards/ray-serve-grafana-dashboard.json"))}
-  YAML
-
-  depends_on = [module.eks, helm_release.kube_prometheus_stack]
-}
-
-resource "kubectl_manifest" "ray_serve_deployment_grafana_dashboard_config" {
-  server_side_apply = true
-  yaml_body         = <<-YAML
-    apiVersion: v1
-    kind: ConfigMap
-    metadata:
-      name: ray-grafana-serve-deployment-dashboard-config
-      namespace: monitoring
-    data:
-      ray-serve-deployment-grafana-dashboard.json: ${jsonencode(file("${path.module}/grafana-dashboards/ray-serve-deployment-grafana-dashboard.json"))}
-  YAML
-
-  depends_on = [module.eks, helm_release.kube_prometheus_stack]
-}
-
-
-resource "kubectl_manifest" "neuron_monitor_grafana_dashboard_config" {
-  server_side_apply = true
-  yaml_body         = <<-YAML
-    apiVersion: v1
-    kind: ConfigMap
-    metadata:
-      name: nm-dashboard-config
-      namespace: monitoring
-    data:
-      neuron-monitor-grafana-dashboard.json: ${jsonencode(file("${path.module}/grafana-dashboards/neuron-monitor-grafana-dashboard.json"))}
+      ${each.value}: ${jsonencode(file("${path.module}/grafana-dashboards/${each.value}"))}
   YAML
 
   depends_on = [module.eks, helm_release.kube_prometheus_stack]

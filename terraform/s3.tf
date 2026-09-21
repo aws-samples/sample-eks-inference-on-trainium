@@ -10,7 +10,7 @@ resource "aws_s3_bucket" "model_storage" {
     Name        = local.s3_bucket_name
     Purpose     = "ML Model Storage"
     Environment = "workshop"
-    CostCenter  = "genai-workshop"
+    CostCenter  = local.name
   })
 }
 

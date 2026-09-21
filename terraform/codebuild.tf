@@ -47,8 +47,8 @@ resource "aws_codebuild_project" "ray_vllm_build" {
   }
 
   source {
-    type = "NO_SOURCE"
-    buildspec = "version: 0.2\n\nphases:\n  pre_build:\n    commands:\n      - echo Logging in to Amazon ECR...\n      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com\n  build:\n    commands:\n      - echo Build started on `date`\n      - echo Building the Docker image...\n      - |\n        cat > Dockerfile << 'EOF'\n        FROM public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.9.1-neuronx-py310-sdk2.25.0-ubuntu22.04\n        \n        USER root\n        \n        # Install Ray\n        RUN pip install ray[serve]==2.43.0\n        \n        # Create ray user and directories\n        RUN useradd -m -s /bin/bash ray && \\\n            mkdir -p /home/ray/python && \\\n            chown -R ray:ray /home/ray\n        \n        USER ray\n        WORKDIR /home/ray\n        \n        # Set environment variables\n        ENV PYTHONPATH=\"/opt/conda/lib/python3.10/site-packages:/home/ray/python:$PYTHONPATH\"\n        ENV LD_LIBRARY_PATH=\"/home/ray/anaconda3/lib:$LD_LIBRARY_PATH\"\n        \n        EXPOSE 8000 8265 10001 6379\n        \n        CMD [\"ray\", \"start\", \"--head\", \"--dashboard-host=0.0.0.0\", \"--dashboard-port=8265\"]\n        EOF\n      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .\n      - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG\n  post_build:\n    commands:\n      - echo Build completed on `date`\n      - echo Pushing the Docker image...\n      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG"
+    type      = "NO_SOURCE"
+    buildspec = file("${path.module}/buildspec-inference-container.yaml")
   }
 }
 
@@ -104,7 +104,7 @@ resource "null_resource" "build_image" {
   }
 
   provisioner "local-exec" {
-    command = "aws codebuild start-build --project-name ${aws_codebuild_project.ray_vllm_build.name}"
+    command = "aws codebuild start-build --project-name ${aws_codebuild_project.ray_vllm_build.name} --region ${local.region}"
   }
 
   depends_on = [aws_codebuild_project.ray_vllm_build]

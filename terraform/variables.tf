@@ -27,14 +27,14 @@ variable "x86_ami_name" {
   default     = "amazon-eks-node-al2023-x86_64-standard-1.36-v20260903"
 }
 
-variable "trn1_ami_name" {
-  description = "EKS-optimized AL2023 x86_64 Neuron AMI name for the trn1 Karpenter NodeClass."
+variable "neuron_ami_name" {
+  description = "EKS-optimized AL2023 x86_64 Neuron AMI name for the shared Neuron Karpenter NodeClass (trn1, trn2, inf2)."
   type        = string
   default     = "amazon-eks-node-al2023-x86_64-neuron-1.36-v20260903"
 }
 
-variable "trn2_ami_name" {
-  description = "EKS-optimized AL2023 x86_64 Neuron AMI name for the trn2 Karpenter NodeClass."
+variable "gpu_ami_name" {
+  description = "EKS-optimized AL2023 x86_64 NVIDIA AMI name for the shared GPU Karpenter NodeClass (g6, g6e, g7, g7e)."
   type        = string
-  default     = "amazon-eks-node-al2023-x86_64-neuron-1.36-v20260903"
+  default     = "amazon-eks-node-al2023-x86_64-nvidia-1.36-v20260903"
 }

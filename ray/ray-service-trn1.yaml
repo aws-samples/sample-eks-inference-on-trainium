@@ -1,0 +1,234 @@
+apiVersion: ray.io/v1
+kind: RayService
+metadata:
+  name: mistral-7b-vllm
+  namespace: default
+spec:
+  serviceUnhealthySecondThreshold: 900
+  deploymentUnhealthySecondThreshold: 900
+  serveConfigV2: |
+    applications:
+      - name: mistral-7b-vllm
+        import_path: "mistral_7b_vllm:deployment"
+        route_prefix: "/"
+        deployments:
+          - name: mistral-7b-vllm-deployment
+            autoscaling_config:
+              min_replicas: 1
+              max_replicas: 4
+              target_num_ongoing_requests_per_replica: 20
+  rayClusterConfig:
+    rayVersion: '2.43.0'
+    enableInTreeAutoscaling: true
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: '0.0.0.0'
+        num-cpus: "0" # this is to ensure no tasks or actors are scheduled on the head Pod
+        num-gpus: "0"
+      template:
+        metadata:
+          labels:
+            ray.io/node-type: head
+        spec:
+          containers:
+          - name: head
+            image: $CUSTOM_RAY_VLLM_IMAGE
+            imagePullPolicy: IfNotPresent
+            lifecycle:
+              preStop:
+                exec:
+                  command: ["/bin/sh", "-c", "ray stop"]
+            ports:
+            - containerPort: 6379
+              name: gcs
+            - containerPort: 8265
+              name: dashboard
+            - containerPort: 10001
+              name: client
+            - containerPort: 8000
+              name: serve
+            - containerPort: 52365
+              name: dashboard-agent
+            volumeMounts:
+            - mountPath: /tmp/ray
+              name: ray-logs
+            - name: vllm-script
+              mountPath: /home/ray/python/mistral_7b_vllm.py
+              subPath: mistral_7b_vllm.py
+            resources:
+              limits:
+                cpu: 4
+                memory: "16G"
+              requests:
+                cpu: 4
+                memory: "16G"
+            env:
+            - name: PYTHONPATH
+              value: "/opt/conda/lib/python3.10/site-packages:/home/ray/python:$PYTHONPATH"
+            - name: VLLM_PORT
+              value: "8004"
+            - name: PORT
+              value: "8000"
+            - name: LD_LIBRARY_PATH
+              value: "/home/ray/anaconda3/lib:$LD_LIBRARY_PATH"
+            - name: RAY_memory_monitor_refresh_ms
+              value: "0"  # Disable memory monitor
+            - name: RAY_memory_usage_threshold
+              value: "0.95" # Set memory threshold
+          nodeSelector:
+            # Pin the Ray head to the general-purpose x86 Karpenter NodePool.
+            karpenter.sh/nodepool: x86-cpu-karpenter
+          tolerations:
+          - key: "karpenter"
+            operator: "Exists"
+            effect: "NoSchedule"
+          volumes:
+          - name: ray-logs
+            emptyDir: {}
+          - name: vllm-script
+            configMap:
+              name: mistral-7b-vllm-script
+    workerGroupSpecs:
+    - replicas: 1
+      minReplicas: 1
+      maxReplicas: 4
+      groupName: worker-group
+      rayStartParams:
+        resources: '"{\"neuron_cores\": 2}"'
+      template:
+        metadata:
+          labels:
+            ray.io/node-type: worker
+        spec:
+          serviceAccountName: model-reader
+          affinity:
+            podAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                    - key: ray.io/node-type
+                      operator: In
+                      values:
+                      - head
+                  topologyKey: kubernetes.io/zone
+          initContainers:
+          - name: model-download
+            image: amazon/aws-cli
+            command: ["/bin/bash", "-c"]
+            args:
+              - |
+                set -e
+                # Pull the model from the S3 cache to node-local NVMe. The dir
+                # persists on the host, so a re-scheduled pod reuses it.
+                if [ ! -d "/tmp/models/mistral-7b-v0.3" ] || [ -z "$(ls -A /tmp/models/mistral-7b-v0.3 2>/dev/null)" ]; then
+                  echo "Downloading model from S3 to local NVMe..."
+                  aws configure set s3.preferred_transfer_client crt
+                  aws s3 cp "s3://${S3_BUCKET_NAME}/mistral-7b-v0.3" /tmp/models/mistral-7b-v0.3 --recursive
+                  ls -la /tmp/models/mistral-7b-v0.3/
+                else
+                  echo "Model already present on local NVMe"
+                fi
+            env:
+              - name: AWS_REGION
+                value: ${AWS_REGION}
+            volumeMounts:
+              - name: local-storage
+                mountPath: /tmp/models
+          containers:
+          - name: worker
+            image: $CUSTOM_RAY_VLLM_IMAGE
+            imagePullPolicy: IfNotPresent
+            lifecycle:
+              preStop:
+                exec:
+                  command: ["/bin/sh", "-c", "ray stop"]
+            volumeMounts:
+            - mountPath: /tmp/ray
+              name: ray-logs
+            - name: vllm-script
+              mountPath: /home/ray/python/mistral_7b_vllm.py
+              subPath: mistral_7b_vllm.py
+            - name: local-storage
+              mountPath: /tmp/models
+            - mountPath: /dev/shm
+              name: dshm
+            resources:
+              limits:
+                cpu: 4
+                memory: "26Gi"
+                aws.amazon.com/neuron: "1"
+              requests:
+                cpu: 4
+                memory: "26Gi"
+                aws.amazon.com/neuron: "1"
+            env:
+            # Model and Neuron configuration
+            - name: MODEL_ID
+              value: "/tmp/models/mistral-7b-v0.3"
+            - name: MAX_MODEL_LEN
+              value: "2048"
+            - name: MAX_NUM_SEQS
+              value: "4"
+            - name: TENSOR_PARALLEL_SIZE
+              value: "2"
+            - name: NEURON_CORES
+              value: "2" # Number of Neuron cores to use
+            - name: NEURON_RT_ASYNC_EXEC
+              value: "1" # Enable asynchronous execution
+            - name: NEURON_RT_NUM_CORES
+              value: "2" # Total number of Neuron cores available
+            - name: NEURON_RT_VISIBLE_CORES
+              value: "0,1" # Which specific cores to use (cores 0 and 1)
+            # Framework configuration
+            - name: VLLM_NEURON_FRAMEWORK
+              value: "neuronx-distributed-inference"
+            - name: NEURON_COMPILED_ARTIFACTS
+              value: "/tmp/models/mistral-7b-v0.3"
+            # compilation settings
+            - name: NEURON_CC_FLAGS
+              value: "-O1"  # Optimization level for compilation
+            - name: NEURON_COMPILE_ONLY
+              value: "0" # Don't just compile, also run the model
+            # system path
+            - name: PYTHONPATH
+              value: "/opt/conda/lib/python3.10/site-packages:/home/ray/python:$PYTHONPATH"
+            - name: VLLM_PORT
+              value: "8004"
+            - name: LD_LIBRARY_PATH
+              value: "/home/ray/anaconda3/lib:$LD_LIBRARY_PATH"
+            - name: PORT
+              value: "8000"
+            # ray
+            - name: RAY_gcs_server_request_timeout_seconds
+              value: "180"
+            - name: RAY_SERVE_KV_TIMEOUT_S
+              value: "180"
+            - name: RAY_memory_monitor_refresh_ms
+              value: "0"  # Disable memory monitor
+            - name: RAY_memory_usage_threshold
+              value: "0.95" # Set memory threshold
+          nodeSelector:
+            # Pin to the neuron-trn1 Karpenter NodePool by name.
+            karpenter.sh/nodepool: neuron-trn1
+          tolerations:
+          - key: "aws.amazon.com/neuron"
+            operator: "Exists"
+            effect: "NoSchedule"
+          - key: "karpenter"
+            operator: "Exists"
+            effect: "NoSchedule"
+          volumes:
+          - name: dshm
+            emptyDir:
+              medium: Memory
+          - name: ray-logs
+            emptyDir: {}
+          - name: vllm-script
+            configMap:
+              name: mistral-7b-vllm-script
+          - name: local-storage
+            hostPath:
+              path: /mnt/k8s-disks/0
+              type: Directory

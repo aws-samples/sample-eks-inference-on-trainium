@@ -1,0 +1,43 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - |
+        cat > Dockerfile << 'EOF'
+        FROM public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.9.1-neuronx-py310-sdk2.25.0-ubuntu22.04
+
+        USER root
+
+        # Install Ray
+        RUN pip install ray[serve]==2.43.0
+
+        # Create ray user and directories
+        RUN useradd -m -s /bin/bash ray && \
+            mkdir -p /home/ray/python && \
+            chown -R ray:ray /home/ray
+
+        USER ray
+        WORKDIR /home/ray
+
+        # Set environment variables
+        ENV PYTHONPATH="/opt/conda/lib/python3.10/site-packages:/home/ray/python:$PYTHONPATH"
+        ENV LD_LIBRARY_PATH="/home/ray/anaconda3/lib:$LD_LIBRARY_PATH"
+
+        EXPOSE 8000 8265 10001 6379
+
+        CMD ["ray", "start", "--head", "--dashboard-host=0.0.0.0", "--dashboard-port=8265"]
+        EOF
+      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+      - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker image...
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
