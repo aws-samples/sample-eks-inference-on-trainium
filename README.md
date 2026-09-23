@@ -4,6 +4,48 @@ Mistral-7B inference on AWS Neuron (Trainium/Inferentia) served with vLLM + Ray 
 on Amazon EKS. Infrastructure is provisioned with Terraform (EKS, Karpenter, S3 model
 cache, observability); the model is served as a `RayService`.
 
+## Architecture
+
+![Architecture](images/arch-flow.png)
+
+### Model
+
+- `mistral-7b-v0.3`
+- `model-compile-s3` Job — downloads the upstream model from HuggingFace, compiles it
+  to Neuron NEFFs (offline vLLM/NxDI), and pushes the compiled artifacts to S3.
+
+### Serving container
+
+- CodeBuild builds the serving image to ECR: **Ray Serve + vLLM (NxDI) on the Neuron
+  Deep Learning Container** (`vllm-neuronx` 0.16 / SDK 2.31).
+- Init container copies the model from S3 to node-local NVMe (AWS CLI **CRT** client,
+  accelerated parallel copy).
+- `model-reader` pod SA (EKS Pod Identity) grants inference pods S3 read; the compile
+  Job uses a separate `model-uploader` SA (read/write).
+
+### EKS cluster
+
+- **Addons** — vpc-cni, CoreDNS, kube-proxy, EKS Pod Identity agent, node-monitoring.
+- **Managed Node Group** (AL2023 x86) — runs the cluster control plane: Karpenter
+  controller, CoreDNS, AWS LB Controller, KubeRay operator, and the Prometheus/Grafana
+  stack. Everything without a `karpenter` toleration lands here.
+- **Karpenter node pools** (workloads only; tainted `karpenter=true`):
+  - `x86-cpu-karpenter` — **static (1 node)**, hosts the Ray head + CPU apps.
+  - neuron — `trn1` **static (1 node)**, `trn2` (ML Capacity Block / reserved), `inf2`.
+  - gpu — `g6`, `g6e`, `g7`, `g7e`.
+  - `ray-image-warmer` DaemonSet pre-pulls the serving image onto every Karpenter node.
+
+### Expose inference endpoint
+
+- AWS Load Balancer Controller exposes the Ray Serve endpoint via a K8s Ingress (ALB).
+
+### Observability
+
+- kube-prometheus-stack + Grafana (dashboards via grafana-operator).
+- neuron-monitor — Trainium/Inferentia hardware metrics.
+- NVIDIA DCGM exporter — GPU metrics.
+- Ray head/worker PodMonitors — Ray + Ray Serve (vLLM) metrics.
+
 ## Prerequisites
 
 - Terraform, `kubectl`, `awscli` v2, `helm`, and `envsubst` (from `gettext`)
@@ -21,12 +63,6 @@ terraform -chdir=terraform apply
 
 This creates the EKS cluster, Karpenter node pools, the S3 model cache, and the
 add-ons (device plugins, GPU operator/DCGM, KubeRay, monitoring). The apply also:
-
-- builds and pushes the custom Ray + vLLM image via CodeBuild, and
-- runs the `model-compile-s3` Job (on trn1): it downloads upstream Mistral-7B-v0.3,
-  runs one offline vLLM inference to compile the model (NxDI writes the full compiled
-  artifacts — NEFFs, sharded weights, metadata), and uploads that directory to
-  `s3://<bucket>/mistral-7b-v0.3`. Serving containers pull compiled model artifacts and skip compilation. 
 
 **Cold-start optimizations.** Two things here cut Ray cluster + model bootstrap from
 **5+ minutes to ~1 minute**:
