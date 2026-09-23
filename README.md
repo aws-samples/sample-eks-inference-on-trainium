@@ -26,9 +26,22 @@ add-ons (device plugins, GPU operator/DCGM, KubeRay, monitoring). The apply also
 - runs the `model-compile-s3` Job (on trn1): it downloads upstream Mistral-7B-v0.3,
   runs one offline vLLM inference to compile the model (NxDI writes the full compiled
   artifacts — NEFFs, sharded weights, metadata), and uploads that directory to
-  `s3://<bucket>/mistral-7b-v0.3`. Serving pulls it and sets `NEURON_COMPILED_ARTIFACTS`,
-  so model load skips compilation. The vLLM config is shared via env vars across the
-  compile job and both serving paths so the artifacts always match.
+  `s3://<bucket>/mistral-7b-v0.3`. Serving containers pull compiled model artifacts and skip compilation. 
+
+**Cold-start optimizations.** Two things here cut Ray cluster + model bootstrap from
+**5+ minutes to ~1 minute**:
+
+- **Static Karpenter nodes** — the `neuron-trn1` and `x86-cpu-karpenter` pools run in
+  static mode (`replicas: 1`), so a Neuron worker node and an x86 Ray head node are kept
+  warm and ready.
+- **Ray image warmer** — a DaemonSet (`ray-image-warmer`, kube-system) pre-pulls the
+  multi-GB Ray + vLLM image onto every Karpenter node, so Ray head/worker pods start
+  from a cached image instead of pulling it at launch.
+
+**Note**: The vLLM config (model, tensor-parallel size, max sequence length, max
+num seqs, dtype) **must match** between the compile job and the serving containers,
+or the compiled artifacts won't be reused and the model recompiles at serve time. 
+The same config it's defined via env vars across the compile job and both serving paths (vLLM, Ray).
 
 Point `kubectl` at the new cluster and wait for the compile job (it can take a while):
 
