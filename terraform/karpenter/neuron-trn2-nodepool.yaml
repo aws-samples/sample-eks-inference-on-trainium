@@ -3,6 +3,8 @@ kind: NodePool
 metadata:
   name: neuron-trn2
 spec:
+  # Static capacity: always keep 1 trn2 node warm. Static nodes are not consolidated.
+  replicas: 0
   template:
     metadata:
       labels:
@@ -24,19 +26,24 @@ spec:
         - key: "kubernetes.io/arch"
           operator: In
           values: ["amd64"]
+        # Pin to the reservation's AZ (cr-010b7bafdf7c6c192 is in us-east-2b).
+        - key: "topology.kubernetes.io/zone"
+          operator: In
+          values: ["us-east-2b"]
+        # Use the ML Capacity Block declared on the neuron NodeClass. Reserved
+        # capacity is the only option here; add "on-demand" back to fall back if
+        # the reservation is exhausted/ended (note: capacity blocks end at their
+        # EndDate - after that reserved launches fail).
         - key: "karpenter.sh/capacity-type"
           operator: In
-          values: ["on-demand"]
+          values: ["reserved"]
       expireAfter: 720h
       terminationGracePeriod: 24h
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
         name: neuron
+  # Static mode allows only the `nodes` limit. Set to 2 for headroom so an
+  # expiring/drifting node can be replaced without dropping below 1.
   limits:
-    aws.amazon.com/neuron: 16
-    cpu: 192
-    memory: 2048Gi
-  disruption:
-    consolidateAfter: 300s
-    consolidationPolicy: WhenEmptyOrUnderutilized
+    nodes: 2

@@ -52,8 +52,12 @@ Neuron all work, with clean single-container logs and no Ray moving parts.
 
 ```bash
 envsubst '$S3_BUCKET_NAME $AWS_REGION' < vllm/mistral-vllm-deployment.yaml | kubectl apply -f -
+```
 
-kubectl logs -f deploy/vllm-mistral7b -c vllm         # watch model pull + Neuron startup
+Expose the vLLM endpoint locally (optionally watch startup first with
+`kubectl logs -f deploy/vllm-mistral7b -c vllm`):
+
+```bash
 kubectl port-forward svc/vllm-mistral7b 8080:8080
 ```
 
@@ -77,7 +81,7 @@ kubectl delete -f vllm/mistral-vllm-deployment.yaml
 Create the serving-script ConfigMap, then apply the `RayService`:
 
 ```bash
-kubectl create configmap mistral7b-vllm-script --from-file=mistral7b_vllm.py=ray/mistral7b_vllm.py
+kubectl create configmap mistral7b-vllm-script --from-file=mistral7b_vllm.py=ray/mistral7b_vllm.py --dry-run=client -o yaml | kubectl apply -f -
 envsubst '$CUSTOM_RAY_VLLM_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-trn1.yaml | kubectl apply -f -
 ```
 
@@ -88,15 +92,19 @@ Watch progress on the Ray dashboard (port 8265 on the head):
 
 ```bash
 kubectl port-forward svc/ray-mistral7b-head-svc 8265:8265
-# open http://localhost:8265  (Serve tab shows the mistral7b-vllm app status)
 ```
 
-Test it:
+Open http://localhost:8265 to visualize the Ray dashboard.
+
+Expose Ray cluster endpoint locally:
 
 ```bash
-kubectl get rayservice ray-mistral7b
+kubectl wait --for=condition=Ready rayservice/ray-mistral7b --timeout=1200s
 kubectl port-forward svc/ray-mistral7b-serve-svc 8000:8000
+```
+In another shell, hit the Ray cluster endpoint with an inference request:
 
+```bash
 curl -s http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "/tmp/models/mistral-7b-v0.3", "messages": [{"role": "user", "content": "Hello"}]}' | jq
@@ -120,29 +128,39 @@ hand. In the `monitoring` namespace you get:
 ```bash
 kubectl get pods -n monitoring
 kubectl get servicemonitor,podmonitor -n monitoring
-kubectl get grafanadashboard -n monitoring          # neuron, gpu-dcgm, ray-*, vllm
-kubectl get daemonset neuron-monitor -n monitoring  # 1 pod per Neuron node
+kubectl get grafanadashboard -n monitoring
+kubectl get daemonset neuron-monitor -n monitoring
 ```
 
-Confirm Neuron metrics are flowing:
+### Confirm Neuron metrics are flowing:
 
+Expose Neuron Monitor locally:
 ```bash
 NM=$(kubectl get pods -l app=neuron-monitor -n monitoring -o jsonpath='{.items[0].metadata.name}')
 kubectl port-forward -n monitoring "$NM" 9010:9010
+```
+Query Neuon metrics
+```bash
 curl -s http://127.0.0.1:9010/metrics | grep -i neuron | head
 ```
 
 ### Access Grafana
 
-Grafana runs internally (ClusterIP). For quick local access:
+Retrive Grafana credentials:
+- **User**: admin
+- **Password**:
+```bash
+kubectl get secret -n monitoring kube-prometheus-stack-grafana \
+  -o jsonpath='{.data.admin-password}' | base64 --decode; echo
+```
+
+Expose Grafana endpoint locally
 
 ```bash
 kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:3000
-# open http://localhost:3000
-kubectl get secret -n monitoring kube-prometheus-stack-grafana \
-  -o jsonpath='{.data.admin-password}' | base64 --decode; echo
-# user: admin
 ```
+
+Open http://localhost:3000
 
 Dashboards land under the `monitoring` folder: **Neuron-Monitor**, **GPU / DCGM**,
 Ray **Default / Serve / Serve Deployment**, and **vLLM**. Generate traffic (curl the
@@ -152,3 +170,19 @@ chat endpoint) and set the time range to the last 15 minutes if a panel looks em
 > `kube-prometheus-stack-grafana:3000` and restrict `alb.ingress.kubernetes.io/inbound-cidrs`
 > to your IP (`curl https://checkip.amazonaws.com`). It's left out of Terraform on
 > purpose — an internet-facing Grafana is a deliberate, security-sensitive choice.
+
+### Generate traffic load
+
+Expose Ray cluster endpoint locally:
+
+```bash
+kubectl port-forward svc/ray-mistral7b-serve-svc 8000:8000
+```
+
+Send multiple inference requests
+
+```bash
+seq 1 100 | xargs -P 4 -I{} curl -s http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"/tmp/models/mistral-7b-v0.3","messages":[{"role":"user","content":"Hello"}]}' -o /dev/null
+```

@@ -24,6 +24,12 @@ spec:
     - tags:
         karpenter.sh/discovery: "${name}"
         kubernetes.io/role/internal-elb: "1"
+  # ML Capacity Block reservations. Karpenter only launches into a reservation
+  # when a NodePool's requirements (instance-family, AZ, ...) match it, so this
+  # is safe to share with the trn1/inf2 pools - only neuron-trn2 (reserved,
+  # trn2) will use cr-010b7bafdf7c6c192.
+  capacityReservationSelectorTerms:
+    - id: cr-010b7bafdf7c6c192
   tags:
     karpenter.sh/discovery: "${name}"
     aws-neuron: "true"

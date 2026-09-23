@@ -19,20 +19,32 @@ module "karpenter" {
   tags = local.tags
 }
 
-# Karpenter 1.14 calls iam:ListInstanceProfiles during instance-profile
-# reconciliation, which the submodule's controller policy does not grant.
-# Add it so the controller can launch nodes.
-resource "aws_iam_role_policy" "karpenter_list_instance_profiles" {
-  name = "karpenter-list-instance-profiles"
+# Extra IAM the submodule's controller policy does not grant:
+#   - iam:ListInstanceProfiles: Karpenter 1.14 uses it during instance-profile
+#     reconciliation, without it no node launches.
+#   - ec2:DescribeCapacityReservations: required for
+#     capacityReservationSelectorTerms (ML Capacity Blocks on the trn2 pool).
+resource "aws_iam_role_policy" "karpenter_extras" {
+  name = "karpenter-extras"
   role = module.karpenter.iam_role_name
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = ["iam:ListInstanceProfiles"]
+        Effect = "Allow"
+        Action = [
+          "iam:ListInstanceProfiles",
+          "ec2:DescribeCapacityReservations",
+        ]
         Resource = "*"
+      },
+      {
+        # RunInstances into an ML Capacity Block: the submodule's RunInstances
+        # policy does not include the capacity-reservation resource ARN.
+        Effect   = "Allow"
+        Action   = ["ec2:RunInstances"]
+        Resource = ["arn:aws:ec2:*:*:capacity-reservation/*"]
       }
     ]
   })

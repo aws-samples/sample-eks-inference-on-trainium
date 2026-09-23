@@ -1,8 +1,7 @@
 """Ray Serve app for Mistral-7B on Neuron via vLLM.
 
 Uses only vLLM classes present in the Neuron build (AsyncLLMEngine, SamplingParams)
-and hand-writes a minimal OpenAI-compatible HTTP layer, because the Neuron fork does
-not ship vllm.entrypoints.openai.* (protocol / serving_chat / serving_models).
+and hand-writes a minimal OpenAI-compatible HTTP layer.
 
 Config comes from env vars, matching the compile job and the head/worker containers.
 """

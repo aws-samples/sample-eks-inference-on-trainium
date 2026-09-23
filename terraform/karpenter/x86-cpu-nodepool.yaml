@@ -3,6 +3,9 @@ kind: NodePool
 metadata:
   name: x86-cpu-karpenter
 spec:
+  # Static capacity: always keep 1 x86 node warm (hosts the Ray head, etc.).
+  # Static nodes are not consolidated.
+  replicas: 1
   template:
     metadata:
       labels:
@@ -17,9 +20,9 @@ spec:
         - key: "karpenter.k8s.aws/instance-family"
           operator: In
           values: ["c5", "m5", "r5"]
-        - key: "karpenter.k8s.aws/instance-cpu"
-          operator: Gt
-          values: ["3"]
+        - key: "karpenter.k8s.aws/instance-size"
+          operator: In
+          values: ["4xlarge", "8xlarge"]
         - key: "kubernetes.io/arch"
           operator: In
           values: ["amd64"]
@@ -32,8 +35,7 @@ spec:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
         name: x86-cpu-karpenter
+  # Static mode allows only the `nodes` limit. 2 gives headroom so an
+  # expiring/drifting node can be replaced without dropping below 1.
   limits:
-    cpu: "256"
-  disruption:
-    consolidateAfter: 300s
-    consolidationPolicy: WhenEmptyOrUnderutilized
+    nodes: 2
