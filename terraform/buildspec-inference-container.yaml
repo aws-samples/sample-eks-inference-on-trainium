@@ -11,7 +11,7 @@ phases:
       - echo Building the Docker image...
       - |
         cat > Dockerfile << 'EOF'
-        FROM public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.9.1-neuronx-py310-sdk2.25.0-ubuntu22.04
+        FROM public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.16.0-neuronx-py312-sdk2.31.1-ubuntu24.04
 
         USER root
 
@@ -27,7 +27,7 @@ phases:
         WORKDIR /home/ray
 
         # Set environment variables
-        ENV PYTHONPATH="/opt/conda/lib/python3.10/site-packages:/home/ray/python:$PYTHONPATH"
+        ENV PYTHONPATH="/opt/conda/lib/python3.12/site-packages:/home/ray/python:$PYTHONPATH"
         ENV LD_LIBRARY_PATH="/home/ray/anaconda3/lib:$LD_LIBRARY_PATH"
 
         EXPOSE 8000 8265 10001 6379

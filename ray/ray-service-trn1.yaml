@@ -1,18 +1,18 @@
 apiVersion: ray.io/v1
 kind: RayService
 metadata:
-  name: mistral-7b-vllm
+  name: ray-mistral7b
   namespace: default
 spec:
   serviceUnhealthySecondThreshold: 900
   deploymentUnhealthySecondThreshold: 900
   serveConfigV2: |
     applications:
-      - name: mistral-7b-vllm
-        import_path: "mistral_7b_vllm:deployment"
+      - name: mistral7b-vllm
+        import_path: "mistral7b_vllm:deployment"
         route_prefix: "/"
         deployments:
-          - name: mistral-7b-vllm-deployment
+          - name: mistral7b-vllm-deployment
             autoscaling_config:
               min_replicas: 1
               max_replicas: 4
@@ -53,8 +53,8 @@ spec:
             - mountPath: /tmp/ray
               name: ray-logs
             - name: vllm-script
-              mountPath: /home/ray/python/mistral_7b_vllm.py
-              subPath: mistral_7b_vllm.py
+              mountPath: /home/ray/python/mistral7b_vllm.py
+              subPath: mistral7b_vllm.py
             resources:
               limits:
                 cpu: 4
@@ -64,13 +64,26 @@ spec:
                 memory: "16G"
             env:
             - name: PYTHONPATH
-              value: "/opt/conda/lib/python3.10/site-packages:/home/ray/python:$PYTHONPATH"
+              value: "/opt/conda/lib/python3.12/site-packages:/home/ray/python:$PYTHONPATH"
             - name: VLLM_PORT
               value: "8004"
             - name: PORT
               value: "8000"
             - name: LD_LIBRARY_PATH
               value: "/home/ray/anaconda3/lib:$LD_LIBRARY_PATH"
+            # Serve app config - the deployment graph is built on the head (Serve
+            # controller imports the app), so mistral7b_vllm.py reads these here.
+            # Must match the worker + compile job values.
+            - name: MODEL_ID
+              value: "/tmp/models/mistral-7b-v0.3"
+            - name: TENSOR_PARALLEL_SIZE
+              value: "2"
+            - name: MAX_NUM_SEQS
+              value: "4"
+            - name: MAX_MODEL_LEN
+              value: "2048"
+            - name: DTYPE
+              value: "bfloat16"
             - name: RAY_memory_monitor_refresh_ms
               value: "0"  # Disable memory monitor
             - name: RAY_memory_usage_threshold
@@ -87,7 +100,7 @@ spec:
             emptyDir: {}
           - name: vllm-script
             configMap:
-              name: mistral-7b-vllm-script
+              name: mistral7b-vllm-script
     workerGroupSpecs:
     - replicas: 1
       minReplicas: 1
@@ -120,16 +133,11 @@ spec:
             args:
               - |
                 set -e
-                # Pull the model from the S3 cache to node-local NVMe. The dir
-                # persists on the host, so a re-scheduled pod reuses it.
-                if [ ! -d "/tmp/models/mistral-7b-v0.3" ] || [ -z "$(ls -A /tmp/models/mistral-7b-v0.3 2>/dev/null)" ]; then
-                  echo "Downloading model from S3 to local NVMe..."
-                  aws configure set s3.preferred_transfer_client crt
-                  aws s3 cp "s3://${S3_BUCKET_NAME}/mistral-7b-v0.3" /tmp/models/mistral-7b-v0.3 --recursive
-                  ls -la /tmp/models/mistral-7b-v0.3/
-                else
-                  echo "Model already present on local NVMe"
-                fi
+                # sync (CRT) reconciles against S3: warm NVMe -> transfers nothing,
+                # fresh node -> full pull, partial -> just the gap.
+                aws configure set s3.preferred_transfer_client crt
+                aws s3 sync "s3://${S3_BUCKET_NAME}/mistral-7b-v0.3" /tmp/models/mistral-7b-v0.3
+                ls -la /tmp/models/mistral-7b-v0.3/
             env:
               - name: AWS_REGION
                 value: ${AWS_REGION}
@@ -148,8 +156,8 @@ spec:
             - mountPath: /tmp/ray
               name: ray-logs
             - name: vllm-script
-              mountPath: /home/ray/python/mistral_7b_vllm.py
-              subPath: mistral_7b_vllm.py
+              mountPath: /home/ray/python/mistral7b_vllm.py
+              subPath: mistral7b_vllm.py
             - name: local-storage
               mountPath: /tmp/models
             - mountPath: /dev/shm
@@ -173,6 +181,8 @@ spec:
               value: "4"
             - name: TENSOR_PARALLEL_SIZE
               value: "2"
+            - name: DTYPE
+              value: "bfloat16"
             - name: NEURON_CORES
               value: "2" # Number of Neuron cores to use
             - name: NEURON_RT_ASYNC_EXEC
@@ -184,7 +194,10 @@ spec:
             # Framework configuration
             - name: VLLM_NEURON_FRAMEWORK
               value: "neuronx-distributed-inference"
+            # Load the precompiled model dir pulled from S3 (no recompile).
             - name: NEURON_COMPILED_ARTIFACTS
+              value: "/tmp/models/mistral-7b-v0.3"
+            - name: NEURON_COMPILE_CACHE_URL
               value: "/tmp/models/mistral-7b-v0.3"
             # compilation settings
             - name: NEURON_CC_FLAGS
@@ -193,7 +206,7 @@ spec:
               value: "0" # Don't just compile, also run the model
             # system path
             - name: PYTHONPATH
-              value: "/opt/conda/lib/python3.10/site-packages:/home/ray/python:$PYTHONPATH"
+              value: "/opt/conda/lib/python3.12/site-packages:/home/ray/python:$PYTHONPATH"
             - name: VLLM_PORT
               value: "8004"
             - name: LD_LIBRARY_PATH
@@ -227,7 +240,7 @@ spec:
             emptyDir: {}
           - name: vllm-script
             configMap:
-              name: mistral-7b-vllm-script
+              name: mistral7b-vllm-script
           - name: local-storage
             hostPath:
               path: /mnt/k8s-disks/0

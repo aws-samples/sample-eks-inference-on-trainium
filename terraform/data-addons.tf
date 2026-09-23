@@ -171,25 +171,4 @@ resource "kubectl_manifest" "external_grafana" {
   depends_on = [module.eks, helm_release.grafana_operator, kubectl_manifest.grafana_admin_credentials, helm_release.kube_prometheus_stack]
 }
 
-# Create a ConfigMap for every Grafana dashboard JSON under ./grafana-dashboards.
-# The `grafana_dashboard` label lets the kube-prometheus-stack Grafana sidecar
-# discover and import each dashboard automatically. Drop a new *.json in that
-# folder and it is applied on the next `terraform apply` - no code change needed.
-resource "kubectl_manifest" "grafana_dashboards" {
-  for_each = fileset("${path.module}/grafana-dashboards", "*.json")
-
-  server_side_apply = true
-  yaml_body         = <<-YAML
-    apiVersion: v1
-    kind: ConfigMap
-    metadata:
-      name: ${trimsuffix(each.value, ".json")}
-      namespace: monitoring
-      labels:
-        grafana_dashboard: "1"
-    data:
-      ${each.value}: ${jsonencode(file("${path.module}/grafana-dashboards/${each.value}"))}
-  YAML
-
-  depends_on = [module.eks, helm_release.kube_prometheus_stack]
-}
+# Grafana dashboards (ConfigMaps + GrafanaDashboard CRs) live in observability.tf.

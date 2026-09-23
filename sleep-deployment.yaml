@@ -1,0 +1,120 @@
+# Standalone vLLM deployment (no Ray) for validating Neuron inference and logs
+# before moving to the RayService. Serves an OpenAI-compatible API on :8080.
+#
+# Deploy with envsubst (same vars as the Ray manifest):
+#   envsubst '$S3_BUCKET_NAME $AWS_REGION' < vllm/mistral-vllm-deployment.yaml | kubectl apply -f -
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sleep
+  labels:
+    model: sleep
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      model: sleep
+  template:
+    metadata:
+      labels:
+        model: sleep
+    spec:
+      serviceAccountName: model-reader
+      nodeSelector:
+        # Pin to the neuron-trn1 Karpenter NodePool by name.
+        karpenter.sh/nodepool: neuron-trn1
+      tolerations:
+        - effect: NoSchedule
+          key: aws.amazon.com/neuron
+          operator: Exists
+        - effect: NoSchedule
+          key: karpenter
+          operator: Exists
+      initContainers:
+        - name: model-download
+          image: amazon/aws-cli
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              if [ ! -d "/tmp/models/mistral-7b-v0.3" ] || [ -z "$(ls -A /tmp/models/mistral-7b-v0.3 2>/dev/null)" ]; then
+                echo "Downloading model from S3 to local NVMe..."
+                aws configure set s3.preferred_transfer_client crt
+                aws s3 cp "s3://${S3_BUCKET_NAME}/mistral-7b-v0.3" /tmp/models/mistral-7b-v0.3 --recursive
+                echo "Download complete:"
+                ls -la /tmp/models/mistral-7b-v0.3/
+              else
+                echo "Model already present on local NVMe"
+              fi
+          env:
+            - name: AWS_REGION
+              value: ${AWS_REGION}
+          volumeMounts:
+            - name: local-storage
+              mountPath: /tmp/models
+      containers:
+        - name: vllm
+          image: public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.16.0-neuronx-py312-sdk2.31.1-ubuntu24.04
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          # Build the serve command from the shared env-var config (same names as
+          # the compile job and the Ray script) so the vLLM config always matches.
+          args:
+            - sleep 999999999
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+              name: http
+          resources:
+            requests:
+              cpu: 4
+              memory: 26Gi
+              aws.amazon.com/neuron: 1
+            limits:
+              cpu: 4
+              memory: 26Gi
+              aws.amazon.com/neuron: 1
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: local-storage
+              mountPath: /tmp/models
+          env:
+            # Shared serve config (must match the compile job + Ray script).
+            - name: MODEL_ID
+              value: "/tmp/models/mistral-7b-v0.3"
+            - name: TENSOR_PARALLEL_SIZE
+              value: "2"
+            - name: MAX_NUM_SEQS
+              value: "4"
+            - name: MAX_MODEL_LEN
+              value: "2048"
+            - name: DTYPE
+              value: "bfloat16"
+            - name: NEURON_RT_NUM_CORES
+              value: "2"
+            - name: NEURON_RT_VISIBLE_CORES
+              value: "0,1"
+            - name: VLLM_LOGGING_LEVEL
+              value: "INFO"
+            - name: VLLM_NEURON_FRAMEWORK
+              value: "neuronx-distributed-inference"
+            # Load the precompiled model dir pulled from S3 (no recompile).
+            - name: NEURON_COMPILED_ARTIFACTS
+              value: "/tmp/models/mistral-7b-v0.3"
+            - name: NEURON_COMPILE_CACHE_URL
+              value: "/tmp/models/mistral-7b-v0.3"
+            - name: MALLOC_ARENA_MAX
+              value: "1"
+      terminationGracePeriodSeconds: 10
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        - name: local-storage
+          hostPath:
+            path: /mnt/k8s-disks/0
+            type: Directory

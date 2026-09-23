@@ -3,6 +3,9 @@ kind: NodePool
 metadata:
   name: neuron-trn1
 spec:
+  # Static capacity: always keep 1 trn1 node warm (NVMe model cache stays hot,
+  # serving pods get an instant local hit). Static nodes are not consolidated.
+  replicas: 1
   template:
     metadata:
       labels:
@@ -33,10 +36,7 @@ spec:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
         name: neuron
+  # Static mode allows only the `nodes` limit. Set to 2 for headroom so an
+  # expiring/drifting node can be replaced without dropping below 1.
   limits:
-    aws.amazon.com/neuron: 4
-    cpu: 32
-    memory: 128Gi
-  disruption:
-    consolidateAfter: 300s
-    consolidationPolicy: WhenEmptyOrUnderutilized
+    nodes: 2

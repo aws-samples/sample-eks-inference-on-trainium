@@ -98,17 +98,17 @@ resource "aws_iam_role_policy" "codebuild_policy" {
 }
 
 # Trigger CodeBuild to run during deployment
-resource "null_resource" "build_image" {
-  triggers = {
-    always_run = timestamp()
-  }
+# resource "null_resource" "build_image" {
+#   triggers = {
+#     always_run = timestamp()
+#   }
 
-  provisioner "local-exec" {
-    command = "aws codebuild start-build --project-name ${aws_codebuild_project.ray_vllm_build.name} --region ${local.region}"
-  }
+#   provisioner "local-exec" {
+#     command = "aws codebuild start-build --project-name ${aws_codebuild_project.ray_vllm_build.name} --region ${local.region}"
+#   }
 
-  depends_on = [aws_codebuild_project.ray_vllm_build]
-}
+#   depends_on = [aws_codebuild_project.ray_vllm_build]
+# }
 
 # Output the ECR repository URL
 output "ray_vllm_image_uri" {
