@@ -24,6 +24,19 @@ module "data_addons" {
         - key: karpenter
           operator: Exists
           effect: NoSchedule
+      # The chart's default nodeAffinity is a hardcoded instance-type allowlist
+      # that omits trn2.48xlarge (and any newer type), so the plugin never lands
+      # on trn2 and no aws.amazon.com/neuron devices are advertised. Replace it
+      # with a label match on neuron.amazonaws.com/neuron-device=true, which
+      # Karpenter sets on every neuron pool (trn1/trn2/inf2) - future-proof.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: neuron.amazonaws.com/neuron-device
+                operator: In
+                values: ["true"]
       scheduler:
         enabled: true
       npd:

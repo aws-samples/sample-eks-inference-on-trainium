@@ -1,24 +1,24 @@
 apiVersion: ray.io/v1
 kind: RayService
 metadata:
-  name: ray-mistral7b
+  name: ray-gpt-oss-20b
   namespace: default
 spec:
-  serviceUnhealthySecondThreshold: 900
-  deploymentUnhealthySecondThreshold: 900
+  serviceUnhealthySecondThreshold: 1800
+  deploymentUnhealthySecondThreshold: 1800
   serveConfigV2: |
     applications:
-      - name: mistral7b-vllm
-        import_path: "mistral7b_vllm:deployment"
+      - name: gpt-oss-20b-vllm
+        import_path: "gpt_oss_20b_vllm:deployment"
         route_prefix: "/"
         deployments:
-          - name: mistral7b-vllm-deployment
+          - name: gpt-oss-20b-vllm-deployment
             autoscaling_config:
               min_replicas: 1
-              max_replicas: 4
+              max_replicas: 1
               target_num_ongoing_requests_per_replica: 20
   rayClusterConfig:
-    rayVersion: '2.43.0'
+    rayVersion: '2.56.1'
     enableInTreeAutoscaling: true
     headGroupSpec:
       rayStartParams:
@@ -53,8 +53,8 @@ spec:
             - mountPath: /tmp/ray
               name: ray-logs
             - name: vllm-script
-              mountPath: /home/ray/python/mistral7b_vllm.py
-              subPath: mistral7b_vllm.py
+              mountPath: /home/ray/python/gpt_oss_20b_vllm.py
+              subPath: gpt_oss_20b_vllm.py
             resources:
               limits:
                 cpu: 4
@@ -64,26 +64,28 @@ spec:
                 memory: "16G"
             env:
             - name: PYTHONPATH
-              value: "/opt/conda/lib/python3.12/site-packages:/home/ray/python:$PYTHONPATH"
+              value: "/opt/conda/lib/python3.13/site-packages:/home/ray/python:$PYTHONPATH"
             - name: VLLM_PORT
               value: "8004"
             - name: PORT
               value: "8000"
-            - name: LD_LIBRARY_PATH
-              value: "/home/ray/anaconda3/lib:$LD_LIBRARY_PATH"
             # Serve app config - the deployment graph is built on the head (Serve
-            # controller imports the app), so mistral7b_vllm.py reads these here.
+            # controller imports the app), so gpt_oss_20b_vllm.py reads these here.
             # Must match the worker + compile job values.
             - name: MODEL_ID
-              value: "/tmp/models/mistral-7b-v0.3"
+              value: "/tmp/models/gpt-oss-20b"
             - name: TENSOR_PARALLEL_SIZE
-              value: "2"
+              value: "8"
             - name: MAX_NUM_SEQS
               value: "4"
+            - name: MAX_NUM_BATCHED_TOKENS
+              value: "8192"
             - name: MAX_MODEL_LEN
-              value: "2048"
-            - name: DTYPE
-              value: "bfloat16"
+              value: "16384"
+            - name: HF_OVERRIDES
+              value: '{"quantization_config": {}}'
+            - name: ADDITIONAL_CONFIG
+              value: '{"neuron_config":{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[4]}}'
             - name: RAY_memory_monitor_refresh_ms
               value: "0"  # Disable memory monitor
             - name: RAY_memory_usage_threshold
@@ -100,14 +102,14 @@ spec:
             emptyDir: {}
           - name: vllm-script
             configMap:
-              name: mistral7b-vllm-script
+              name: gpt-oss-20b-vllm-script
     workerGroupSpecs:
     - replicas: 1
       minReplicas: 1
-      maxReplicas: 4
+      maxReplicas: 1
       groupName: worker-group
       rayStartParams:
-        resources: '"{\"neuron_cores\": 2}"'
+        resources: '"{\"neuron_cores\": 8}"'
       template:
         metadata:
           labels:
@@ -134,10 +136,16 @@ spec:
               - |
                 set -e
                 # sync (CRT) reconciles against S3: warm NVMe -> transfers nothing,
-                # fresh node -> full pull, partial -> just the gap.
+                # fresh node -> full pull, partial -> just the gap. Pulls weights +
+                # the precompiled NEFF cache (cache/ subdir), so no recompile.
                 aws configure set s3.preferred_transfer_client crt
-                aws s3 sync "s3://${S3_BUCKET_NAME}/mistral-7b-v0.3" /tmp/models/mistral-7b-v0.3
-                ls -la /tmp/models/mistral-7b-v0.3/
+                aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b" /tmp/models/gpt-oss-20b
+                # This init container runs as root, but the Ray worker runs as the
+                # non-root `ray` user. The NxDI loader creates
+                # <model>/neuron-compiled-artifacts/<hash> at load time, so make the
+                # model dir writable by the ray user or it hits PermissionError.
+                chmod -R a+rwX /tmp/models/gpt-oss-20b
+                ls -la /tmp/models/gpt-oss-20b/
             env:
               - name: AWS_REGION
                 value: ${AWS_REGION}
@@ -156,61 +164,63 @@ spec:
             - mountPath: /tmp/ray
               name: ray-logs
             - name: vllm-script
-              mountPath: /home/ray/python/mistral7b_vllm.py
-              subPath: mistral7b_vllm.py
+              mountPath: /home/ray/python/gpt_oss_20b_vllm.py
+              subPath: gpt_oss_20b_vllm.py
             - name: local-storage
               mountPath: /tmp/models
             - mountPath: /dev/shm
               name: dshm
             resources:
+              # Dedicate the whole trn2.48xlarge (16 Neuron devices / 64 logical
+              # NeuronCores); TP8 uses 8 of them.
               limits:
-                cpu: 4
-                memory: "26Gi"
-                aws.amazon.com/neuron: "1"
+                cpu: 32
+                memory: "128Gi"
+                aws.amazon.com/neuron: "16"
               requests:
-                cpu: 4
-                memory: "26Gi"
-                aws.amazon.com/neuron: "1"
+                cpu: 32
+                memory: "128Gi"
+                aws.amazon.com/neuron: "16"
             env:
-            # Model and Neuron configuration
+            # Model and serve configuration (must match head + compile job).
             - name: MODEL_ID
-              value: "/tmp/models/mistral-7b-v0.3"
+              value: "/tmp/models/gpt-oss-20b"
             - name: MAX_MODEL_LEN
-              value: "2048"
+              value: "16384"
             - name: MAX_NUM_SEQS
               value: "4"
+            - name: MAX_NUM_BATCHED_TOKENS
+              value: "8192"
             - name: TENSOR_PARALLEL_SIZE
-              value: "2"
-            - name: DTYPE
-              value: "bfloat16"
+              value: "8"
+            - name: HF_OVERRIDES
+              value: '{"quantization_config": {}}'
+            - name: ADDITIONAL_CONFIG
+              value: '{"neuron_config":{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[4]}}'
             - name: NEURON_CORES
-              value: "2" # Number of Neuron cores to use
+              value: "8" # NeuronCores used by the deployment (TP8)
             - name: NEURON_RT_ASYNC_EXEC
               value: "1" # Enable asynchronous execution
             - name: NEURON_RT_NUM_CORES
-              value: "2" # Total number of Neuron cores available
-            - name: NEURON_RT_VISIBLE_CORES
-              value: "0,1" # Which specific cores to use (cores 0 and 1)
-            # Framework configuration
-            - name: VLLM_NEURON_FRAMEWORK
-              value: "neuronx-distributed-inference"
-            # Load the precompiled model dir pulled from S3 (no recompile).
-            - name: NEURON_COMPILED_ARTIFACTS
-              value: "/tmp/models/mistral-7b-v0.3"
-            - name: NEURON_COMPILE_CACHE_URL
-              value: "/tmp/models/mistral-7b-v0.3"
-            # compilation settings
-            - name: NEURON_CC_FLAGS
-              value: "-O1"  # Optimization level for compilation
-            - name: NEURON_COMPILE_ONLY
-              value: "0" # Don't just compile, also run the model
+              value: "8" # Total number of Neuron cores available to the runtime
+            # trn2 nodes here have no EFA; EFA affinity is a CPU perf hint, not
+            # required for single-instance TP8 (collectives use NeuronLink).
+            - name: NEURON_SKIP_EFA_AFFINITY
+              value: "1"
+            # gpt-oss needs long compile/execute timeouts (cache hit expected from
+            # S3, but keep them in case a fresh compile is triggered).
+            - name: VLLM_NEURON_COMPILATION_TIMEOUT
+              value: "1200"
+            - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+              value: "1200"
+            # Load the precompiled NEFF cache pulled from S3 (no recompile).
+            - name: VLLM_CACHE_ROOT
+              value: "/tmp/models/gpt-oss-20b/cache"
             # system path
             - name: PYTHONPATH
-              value: "/opt/conda/lib/python3.12/site-packages:/home/ray/python:$PYTHONPATH"
+              value: "/opt/conda/lib/python3.13/site-packages:/home/ray/python:$PYTHONPATH"
             - name: VLLM_PORT
               value: "8004"
-            - name: LD_LIBRARY_PATH
-              value: "/home/ray/anaconda3/lib:$LD_LIBRARY_PATH"
             - name: PORT
               value: "8000"
             # ray
@@ -223,8 +233,8 @@ spec:
             - name: RAY_memory_usage_threshold
               value: "0.95" # Set memory threshold
           nodeSelector:
-            # Pin to the neuron-trn1 Karpenter NodePool by name.
-            karpenter.sh/nodepool: neuron-trn1
+            # Pin to the neuron-trn2 Karpenter NodePool by name.
+            karpenter.sh/nodepool: neuron-trn2
           tolerations:
           - key: "aws.amazon.com/neuron"
             operator: "Exists"
@@ -240,7 +250,7 @@ spec:
             emptyDir: {}
           - name: vllm-script
             configMap:
-              name: mistral7b-vllm-script
+              name: gpt-oss-20b-vllm-script
           - name: local-storage
             hostPath:
               path: /mnt/k8s-disks/0

@@ -38,3 +38,15 @@ variable "gpu_ami_name" {
   type        = string
   default     = "amazon-eks-node-al2023-x86_64-nvidia-1.36-v20260903"
 }
+
+variable "vllm_neuron_base_image" {
+  description = "vLLM-Neuron DLC base image the serving container is built FROM. The serving image tag is derived from this + ray_version."
+  type        = string
+  default     = "public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04"
+}
+
+variable "ray_version" {
+  description = "Ray version installed on top of the base image. Must have py3.13 wheels and be compatible with the KubeRay operator (1.7.x -> Ray 2.55/2.56). Keep in sync with rayVersion in ray/ray-service-trn2.yaml."
+  type        = string
+  default     = "2.56.1"
+}

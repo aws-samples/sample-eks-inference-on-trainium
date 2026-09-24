@@ -1,0 +1,6 @@
+apiVersion: v2
+name: benchmark
+description: Endpoint-agnostic LLM inference benchmark (inference-perf) for gpt-oss-20b on Neuron
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

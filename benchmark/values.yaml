@@ -1,0 +1,162 @@
+# Default values for the benchmark chart.
+#
+# One `helm install <label>` fans out one Job per enabled test against a single
+# target endpoint. The only things that change between endpoints (vLLM, Ray, or
+# your own GPU deploy) are `target.baseUrl` and `target.label` — everything else
+# stays fixed so results are comparable across runs.
+
+benchmark:
+  enabled: true
+
+  image:
+    repository: quay.io/inference-perf/inference-perf
+    tag: v0.6.1
+    pullPolicy: IfNotPresent
+
+  # Reuse the pre-provisioned model-uploader SA: EKS Pod Identity already wires it
+  # to an IAM role with S3 read+write on the model cache bucket, which is where we
+  # store benchmark results. (model-reader is read-only, so it can't be used here.)
+  serviceAccount: model-uploader
+
+  job:
+    backoffLimit: 1
+    ttlSecondsAfterFinished: 86400
+
+  # ---- Target endpoint (override per run) --------------------------------------
+  # label      : free-form tag; becomes the S3 path segment so runs never collide
+  #              (e.g. vllm, ray, gpu-l40s). Override with --set target.label=...
+  # baseUrl    : in-cluster URL of the endpoint under test.
+  #                vLLM  : http://vllm-gpt-oss-20b.default.svc.cluster.local:8080
+  #                Ray   : http://ray-gpt-oss-20b-serve-svc.default.svc.cluster.local:8000
+  # modelName  : must match the served model name (vLLM's MODEL_ID). Both the
+  #              standalone vLLM and the Ray deploy serve under this path.
+  # tokenizer  : HF id used only to count tokens client-side.
+  target:
+    label: vllm
+    serverType: vllm
+    modelName: /tmp/models/gpt-oss-20b
+    baseUrl: http://vllm-gpt-oss-20b.default.svc.cluster.local:8080
+    tokenizerPath: openai/gpt-oss-20b
+    ignoreEos: true
+
+  api:
+    type: completion
+    streaming: true
+
+  storage:
+    s3:
+      bucketName: ""            # set via --set storage.s3.bucketName=$S3_BUCKET_NAME
+      pathPrefix: benchmarks    # -> benchmarks/<label>/<test>/<run-id>/
+
+  # ---- Cost basis for the cost/performance metric ------------------------------
+  # Node on-demand $/hr, used at visualize time as: peak output tok/s ÷ $/hr.
+  # Default is a single trn2.48xlarge (us-west-2 on-demand, approx). Override with
+  # --set cost.hourlyUsd=... when benchmarking a different instance (e.g. a GPU).
+  # NOTE: verify current pricing for your region before quoting results.
+  cost:
+    hourlyUsd: 35.0
+    note: "trn2.48xlarge on-demand (approx; verify current pricing for your region)"
+
+  # No extra pip deps needed for the gpt-oss tokenizer (fast tokenizer.json).
+  dependencies:
+    packages: []
+
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+  # Prefer scheduling in the same zone as the inference pods (soft, never blocks).
+  # Default matches the standalone vLLM deploy; harmless for Ray (just a hint).
+  affinity:
+    enabled: true
+    targetLabels:
+      model: gpt-oss-20b
+
+  # Tests run SEQUENTIALLY in one pod in this order (a test is skipped if it is
+  # not enabled below). latency runs first, under zero competing load, so its
+  # numbers aren't polluted by the throughput/chat sweeps saturating the endpoint.
+  runOrder:
+    - latency
+    - throughput
+    - chat
+
+  # ---- The tests ---------------------------------------------------------------
+  # latency    : lowest p50/p95 — 1 rps, deterministic synthetic sizes, zero
+  #              contention. A controlled microbenchmark (best-case latency floor).
+  # throughput : highest sustained output tok/s — a `sweep` auto-discovers the
+  #              saturation point on a controlled synthetic distribution. Its peak
+  #              also feeds the cost/performance number.
+  # chat       : realistic workload — replays real ShareGPT chat prompts (variable
+  #              lengths, natural distribution) under a sweep. This is the
+  #              defensible, apples-to-apples number to quote for a chat app.
+  #
+  # Each test sets data.type (default synthetic). synthetic/random use the
+  # input/output distributions; dataset types (shareGPT, ...) draw real prompts and
+  # ignore the distributions. shareGPT auto-downloads from HuggingFace at job start
+  # (the pod already needs HF egress for the tokenizer); set data.path to load from
+  # a pre-staged file instead.
+  tests:
+    latency:
+      enabled: true
+      description: "Lowest p50/p95 latency under zero contention"
+      data:
+        type: synthetic
+        # Must be >= total requests this test makes (rate 1 x 60s = ~60); generous.
+        totalCount: 5000
+        input:  { mean: 512, stdDev: 0, min: 512, max: 512 }
+        output: { mean: 128, stdDev: 0, min: 128, max: 128 }
+      load:
+        type: constant
+        numWorkers: 4
+        stages:
+          - { rate: 1, duration: 60 }
+
+    throughput:
+      enabled: true
+      description: "Highest sustained output token throughput (synthetic sweep)"
+      data:
+        type: synthetic
+        # Sweep draws many requests across warmup + stages; keep well above
+        # numRequests x numStages so length arrays never run out.
+        totalCount: 100000
+        input:  { mean: 512, stdDev: 128, min: 128, max: 2048 }
+        output: { mean: 256, stdDev: 64,  min: 32,  max: 512 }
+      load:
+        type: constant
+        numWorkers: 8
+        # Geometric sweep: inference-perf ramps the rate across numStages, stops
+        # when the saturationPercentile latency degrades, and reports the peak.
+        # Kept short (2 x 45s + drain ~= 2-3 min) for demo turnaround; raise
+        # numRequests/stageDuration for a more statistically stable result.
+        sweep:
+          type: geometric
+          numRequests: 400
+          timeout: 180
+          numStages: 2
+          stageDuration: 30
+          saturationPercentile: 95
+
+    chat:
+      enabled: true
+      description: "Realistic ShareGPT chat workload (auto saturation sweep)"
+      data:
+        type: shareGPT
+        # Auto-downloads ShareGPT_V3 from HuggingFace when unset. To use a
+        # pre-staged/converted file (e.g. UltraChat reformatted to ShareGPT
+        # schema), mount it and set the in-container path here:
+        # path: /workspace/data/sharegpt.json
+      load:
+        type: poisson   # bursty arrivals, closer to real traffic
+        numWorkers: 8
+        # Short sweep for demo turnaround (~2-3 min); raise for stable numbers.
+        sweep:
+          type: geometric
+          numRequests: 400
+          timeout: 180
+          numStages: 2
+          stageDuration: 45
+          saturationPercentile: 95

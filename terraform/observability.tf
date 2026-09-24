@@ -72,7 +72,7 @@ resource "kubectl_manifest" "neuron_monitor" {
                 path: /dev
           restartPolicy: Always
   YAML
-  depends_on = [helm_release.kube_prometheus_stack]
+  depends_on        = [helm_release.kube_prometheus_stack]
 }
 
 resource "kubectl_manifest" "neuron_monitor_service" {
@@ -97,7 +97,7 @@ resource "kubectl_manifest" "neuron_monitor_service" {
       selector:
         app: neuron-monitor
   YAML
-  depends_on = [kubectl_manifest.neuron_monitor]
+  depends_on        = [kubectl_manifest.neuron_monitor]
 }
 
 resource "kubectl_manifest" "neuron_monitor_servicemonitor" {
@@ -122,7 +122,7 @@ resource "kubectl_manifest" "neuron_monitor_servicemonitor" {
           path: /metrics
           scheme: http
   YAML
-  depends_on = [kubectl_manifest.neuron_monitor_service]
+  depends_on        = [kubectl_manifest.neuron_monitor_service]
 }
 
 # Ray head + worker PodMonitors so Prometheus scrapes Ray, autoscaler, dashboard,
@@ -161,7 +161,7 @@ resource "kubectl_manifest" "ray_head_monitor" {
               sourceLabels: ["__meta_kubernetes_pod_label_ray_io_cluster"]
               targetLabel: ray_io_cluster
   YAML
-  depends_on = [helm_release.kube_prometheus_stack]
+  depends_on        = [helm_release.kube_prometheus_stack]
 }
 
 resource "kubectl_manifest" "ray_workers_monitor" {
@@ -187,7 +187,7 @@ resource "kubectl_manifest" "ray_workers_monitor" {
             - sourceLabels: ["__meta_kubernetes_pod_label_ray_io_cluster"]
               targetLabel: ray_io_cluster
   YAML
-  depends_on = [helm_release.kube_prometheus_stack]
+  depends_on        = [helm_release.kube_prometheus_stack]
 }
 
 # One GrafanaDashboard per dashboard JSON under ./grafana-dashboards. The JSON is

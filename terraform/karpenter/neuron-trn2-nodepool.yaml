@@ -4,7 +4,8 @@ metadata:
   name: neuron-trn2
 spec:
   # Static capacity: always keep 1 trn2 node warm. Static nodes are not consolidated.
-  replicas: 0
+  # Hosts the single-instance gpt-oss-20b deployment (TP8, BF16) on one trn2.48xlarge.
+  replicas: 1
   template:
     metadata:
       labels:

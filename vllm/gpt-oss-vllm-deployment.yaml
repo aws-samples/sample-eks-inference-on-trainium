@@ -1,0 +1,176 @@
+# Standalone vLLM deployment (no Ray) for validating gpt-oss-20b on Neuron before
+# moving to the RayService. Single-instance, TP8, BF16 on one trn2.48xlarge.
+# Serves the OpenAI-compatible API on :8080 (the 0.24 plugin restores the OpenAI
+# entrypoints, so no hand-written HTTP layer is needed).
+#
+# Deploy with envsubst (same vars as the Ray manifest):
+#   envsubst '$S3_BUCKET_NAME $AWS_REGION' < vllm/gpt-oss-vllm-deployment.yaml | kubectl apply -f -
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-gpt-oss-20b
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/app-metrics: "true"
+    prometheus.io/port: "8080"
+  labels:
+    model: gpt-oss-20b
+spec:
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    model: gpt-oss-20b
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-gpt-oss-20b
+  labels:
+    model: gpt-oss-20b
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      model: gpt-oss-20b
+  template:
+    metadata:
+      labels:
+        model: gpt-oss-20b
+    spec:
+      serviceAccountName: model-reader
+      nodeSelector:
+        # Pin to the neuron-trn2 Karpenter NodePool by name.
+        karpenter.sh/nodepool: neuron-trn2
+      tolerations:
+        - effect: NoSchedule
+          key: aws.amazon.com/neuron
+          operator: Exists
+        - effect: NoSchedule
+          key: karpenter
+          operator: Exists
+      initContainers:
+        - name: model-download
+          image: amazon/aws-cli
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              # sync (CRT) reconciles against S3: warm NVMe -> transfers nothing,
+              # fresh node -> full pull, partial -> just the gap. Pulls weights +
+              # the precompiled NEFF cache (cache/ subdir), so no recompile.
+              aws configure set s3.preferred_transfer_client crt
+              aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b" /tmp/models/gpt-oss-20b
+              ls -la /tmp/models/gpt-oss-20b/
+          env:
+            - name: AWS_REGION
+              value: ${AWS_REGION}
+          volumeMounts:
+            - name: local-storage
+              mountPath: /tmp/models
+      containers:
+        - name: vllm
+          image: public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          # Build the serve command from the shared env-var config (same scalar
+          # values as the compile job + Ray script). The --hf-overrides and
+          # --additional-config JSON blobs are inlined and MUST match the compile
+          # job exactly, or the precompiled cache won't be reused.
+          args:
+            - >
+              vllm serve "$MODEL_ID"
+              --tokenizer "$MODEL_ID"
+              --host 0.0.0.0 --port 8080
+              --tensor-parallel-size "$TENSOR_PARALLEL_SIZE"
+              --max-model-len "$MAX_MODEL_LEN"
+              --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
+              --max-num-seqs "$MAX_NUM_SEQS"
+              --enable-prefix-caching
+              --no-disable-hybrid-kv-cache-manager
+              --hf-overrides "$HF_OVERRIDES"
+              --additional-config "$ADDITIONAL_CONFIG"
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+              name: http
+          # Readiness only (no liveness) - the pod becomes Ready when vLLM's
+          # /health responds, i.e. after the model loads + compiles/warms up. No
+          # liveness probe on purpose, so a slow warmup (or a transient hiccup)
+          # never restarts the pod. failureThreshold x periodSeconds (60 x 15s =
+          # 15 min) covers a cold compile from scratch.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 60
+          resources:
+            # Dedicate the whole trn2.48xlarge (16 Neuron devices / 64 logical
+            # NeuronCores); TP8 uses 8 of them.
+            requests:
+              cpu: 32
+              memory: 128Gi
+              aws.amazon.com/neuron: 16
+            limits:
+              cpu: 48
+              memory: 128Gi
+              aws.amazon.com/neuron: 16
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: local-storage
+              mountPath: /tmp/models
+          env:
+            # Shared serve config (must match the compile job + Ray script).
+            - name: MODEL_ID
+              value: "/tmp/models/gpt-oss-20b"
+            - name: TENSOR_PARALLEL_SIZE
+              value: "8"
+            - name: MAX_NUM_SEQS
+              value: "4"
+            - name: MAX_NUM_BATCHED_TOKENS
+              value: "8192"
+            - name: MAX_MODEL_LEN
+              value: "16384"
+            # JSON serve flags as env so they stay identical across the compile
+            # job + both serving paths (a mismatch changes the NEFF cache key).
+            - name: HF_OVERRIDES
+              value: '{"quantization_config": {}}'
+            - name: ADDITIONAL_CONFIG
+              value: '{"neuron_config":{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[4]}}'
+            - name: NEURON_RT_NUM_CORES
+              value: "8"
+            # trn2 nodes here have no EFA; EFA affinity is a CPU perf hint, not
+            # required for single-instance TP8 (collectives use NeuronLink).
+            - name: NEURON_SKIP_EFA_AFFINITY
+              value: "1"
+            - name: VLLM_LOGGING_LEVEL
+              value: "INFO"
+            # gpt-oss needs long compile/execute timeouts (should be a cache hit
+            # from S3, but keep them in case a fresh compile is triggered).
+            - name: VLLM_NEURON_COMPILATION_TIMEOUT
+              value: "1200"
+            - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+              value: "1200"
+            # Load the precompiled NEFF cache pulled from S3 (no recompile).
+            - name: VLLM_CACHE_ROOT
+              value: "/tmp/models/gpt-oss-20b/cache"
+            - name: MALLOC_ARENA_MAX
+              value: "1"
+      terminationGracePeriodSeconds: 10
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        - name: local-storage
+          hostPath:
+            path: /mnt/k8s-disks/0
+            type: Directory

@@ -22,3 +22,6 @@ terraform.rc
 
 # OS / editor
 .DS_Store
+
+# Log files
+*.log

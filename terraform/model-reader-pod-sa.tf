@@ -61,5 +61,5 @@ resource "kubectl_manifest" "model_reader_sa" {
       name: model-reader
       namespace: default
   YAML
-  depends_on = [module.eks]
+  depends_on        = [module.eks]
 }

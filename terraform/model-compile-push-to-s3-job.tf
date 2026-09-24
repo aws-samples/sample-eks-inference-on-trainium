@@ -1,19 +1,21 @@
 ################################################################################
 # Model compile -> S3
 #
-# One-shot Job that prepares the Neuron model cache. It runs on the neuron-trn1
-# Karpenter pool because it compiles through vLLM's own offline path, which
-# guarantees the NEFF matches the exact vLLM version + config used at serve time.
+# One-shot Job that prepares the Neuron model cache for gpt-oss-20b. It runs on
+# the neuron-trn2 Karpenter pool and compiles by launching the EXACT `vllm serve`
+# command used at serve time - the standalone vLLM Neuron plugin (0.24) compiles
+# the model graphs on first launch before accepting traffic and keys the cached
+# NEFFs by config, so running the identical command guarantees the serving pods
+# reuse the cache instead of recompiling (gpt-oss cold compile is 20-40 min).
 # Three phases:
-#   1. Download the UPSTREAM (uncompiled) mistralai/Mistral-7B-Instruct-v0.3
-#      from HuggingFace via huggingface_hub (hf_xet backend for fast transfer).
-#   2. Run one offline vLLM inference with the serve config; NxDI writes the
-#      full compiled model tree (NEFFs, sharded weights, metadata) into
-#      NEURON_COMPILED_ARTIFACTS, colocated with the model dir.
-#   3. Upload the model dir (weights + compiled artifacts) to S3. Serving pulls
-#      that dir and points NEURON_COMPILED_ARTIFACTS at it, so model load skips
-#      compilation entirely. Serve config is shared via env vars to guarantee
-#      the compiled artifacts are reused (a mismatch would force a recompile).
+#   1. Download the upstream openai/gpt-oss-20b from HuggingFace via
+#      huggingface_hub (hf_xet backend for fast transfer).
+#   2. Launch `vllm serve` with the serve config; wait for /health to go ready
+#      (= compilation complete). The plugin writes NEFFs under VLLM_CACHE_ROOT,
+#      which lives inside the model dir.
+#   3. Upload the model dir (weights + VLLM_CACHE_ROOT) to S3. Serving pulls that
+#      dir and points VLLM_CACHE_ROOT at it, so model load skips compilation.
+#      Serve config is shared via env vars / identical flags to guarantee reuse.
 #
 # Auth uses EKS Pod Identity (model-uploader SA), not the node role / IMDS.
 ################################################################################
@@ -94,18 +96,19 @@ resource "kubectl_manifest" "job_model_compile_s3" {
       backoffLimit: 1
       completionMode: NonIndexed
       completions: 1
+      # gpt-oss cold compile is 20-40 min (plus the ~40 GB HF download); allow
+      # generous headroom before the Job is killed for exceeding its deadline.
+      activeDeadlineSeconds: 7200
       template:
         spec:
           serviceAccountName: model-uploader
           restartPolicy: Never
 
-          # Compile runs on trn1 because it uses vLLM's own offline path (which
-          # initializes the Neuron runtime) - this guarantees the compiled
-          # artifacts match the exact vLLM version + config used at serve time.
-          # NxDI writes the full compiled model tree into NEURON_COMPILED_ARTIFACTS,
-          # which is then uploaded to S3 for serving to pull.
+          # Compile runs on trn2 by launching the exact serve command, so the
+          # NEFFs the plugin writes to VLLM_CACHE_ROOT match the config the
+          # serving pods look up (a mismatch would force a recompile).
           nodeSelector:
-            karpenter.sh/nodepool: neuron-trn1
+            karpenter.sh/nodepool: neuron-trn2
           tolerations:
             - key: aws.amazon.com/neuron
               operator: Exists
@@ -115,16 +118,24 @@ resource "kubectl_manifest" "job_model_compile_s3" {
               effect: NoSchedule
 
           initContainers:
-            # 1. Download the UPSTREAM (uncompiled) model from HuggingFace.
+            # 1. Download the upstream model from HuggingFace. HF_REPO_ID and
+            # MODEL_DIR are read from env (via os.environ, since a shell $VAR
+            # wouldn't expand inside the python -c literal), so the download path
+            # stays in sync with MODEL_ID in the compile container below.
             - name: download-upstream
               image: python:3.11-slim
               command: ["/bin/bash", "-c"]
+              env:
+                - name: HF_REPO_ID
+                  value: openai/gpt-oss-20b
+                - name: MODEL_DIR
+                  value: /tmp/models/gpt-oss-20b
               args:
                 - |
                   set -euo pipefail
                   pip install --no-cache-dir "huggingface_hub[hf_xet]"
-                  python -c 'from huggingface_hub import snapshot_download; snapshot_download(repo_id="mistralai/Mistral-7B-Instruct-v0.3", local_dir="/tmp/models/mistral-7b-v0.3", max_workers=16, ignore_patterns=["consolidated.safetensors"])'
-                  echo "Downloaded upstream model: $(du -sh /tmp/models/mistral-7b-v0.3 | cut -f1)"
+                  python -c 'import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id=os.environ["HF_REPO_ID"], local_dir=os.environ["MODEL_DIR"], max_workers=16)'
+                  echo "Downloaded upstream model: $(du -sh "$MODEL_DIR" | cut -f1)"
               volumeMounts:
                 - name: work
                   mountPath: /tmp/models
@@ -132,65 +143,99 @@ resource "kubectl_manifest" "job_model_compile_s3" {
           # 2. Compile + upload in ONE main container that owns the Neuron device.
           containers:
             - name: compile-and-upload
-              image: public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.16.0-neuronx-py312-sdk2.31.1-ubuntu24.04
+              image: public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04
               env:
-                - name: VLLM_NEURON_FRAMEWORK
-                  value: neuronx-distributed-inference
-                - name: NEURON_COMPILED_ARTIFACTS
-                  value: /tmp/models/mistral-7b-v0.3
-                # neuronx-cc kernel cache in the model dir so it is uploaded with
-                # the model and reused at serve time (local dir, not s3://).
-                - name: NEURON_COMPILE_CACHE_URL
-                  value: /tmp/models/mistral-7b-v0.3
-                # Serve config - MUST match the serving manifests (same env names).
+                # NEFF cache lives inside the model dir so it is uploaded with the
+                # weights and reused at serve time (local dir, not s3://).
+                - name: VLLM_CACHE_ROOT
+                  value: /tmp/models/gpt-oss-20b/cache
+                # gpt-oss needs long compile/execute timeouts.
+                - name: VLLM_NEURON_COMPILATION_TIMEOUT
+                  value: "1200"
+                - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+                  value: "1200"
+                # Serve config - MUST match the serving manifests (same env names,
+                # including the HF_OVERRIDES / ADDITIONAL_CONFIG JSON below). A
+                # mismatch changes the NEFF cache key and forces a recompile.
                 - name: MODEL_ID
-                  value: /tmp/models/mistral-7b-v0.3
+                  value: /tmp/models/gpt-oss-20b
                 - name: TENSOR_PARALLEL_SIZE
-                  value: "2"
+                  value: "8"
                 - name: MAX_NUM_SEQS
                   value: "4"
+                - name: MAX_NUM_BATCHED_TOKENS
+                  value: "8192"
                 - name: MAX_MODEL_LEN
-                  value: "2048"
-                - name: DTYPE
-                  value: bfloat16
+                  value: "16384"
+                - name: HF_OVERRIDES
+                  value: '{"quantization_config": {}}'
+                - name: ADDITIONAL_CONFIG
+                  value: '{"neuron_config":{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[4]}}'
                 - name: NEURON_RT_NUM_CORES
-                  value: "2"
-                - name: NEURON_RT_VISIBLE_CORES
-                  value: "0,1"
+                  value: "8"
+                # trn2 nodes here have no EFA; EFA affinity is a CPU perf hint,
+                # not required for single-instance TP8 (collectives use NeuronLink).
+                - name: NEURON_SKIP_EFA_AFFINITY
+                  value: "1"
                 - name: AWS_REGION
                   value: ${local.region}
                 - name: S3_PREFIX
-                  value: s3://${local.s3_bucket_name}/mistral-7b-v0.3
+                  value: s3://${local.s3_bucket_name}/gpt-oss-20b
               resources:
+                # Dedicate the whole trn2.48xlarge (16 Neuron devices / 64 logical
+                # NeuronCores). TP8 uses 8 cores; the node hosts only this workload.
                 requests:
-                  cpu: 4
-                  memory: 26Gi
-                  aws.amazon.com/neuron: "1"
+                  cpu: 32
+                  memory: 128Gi
+                  aws.amazon.com/neuron: "16"
                 limits:
-                  cpu: 8
-                  memory: 26Gi
-                  aws.amazon.com/neuron: "1"
+                  cpu: 48
+                  memory: 128Gi
+                  aws.amazon.com/neuron: "16"
               command: ["/bin/bash", "-c"]
               args:
                 - |
                   set -euo pipefail
 
-                  # Compile bootstrap script, embedded from scripts/compile_model.py
-                  # (base64 avoids YAML/heredoc indentation issues), decoded and run.
-                  echo "${base64encode(file("${path.module}/scripts/compile_model.py"))}" | base64 -d > /tmp/compile_model.py
-                  python /tmp/compile_model.py
+                  # Compile by launching the EXACT serve command; the plugin
+                  # compiles the graphs before /health goes ready, writing NEFFs
+                  # to VLLM_CACHE_ROOT. Keep these flags in sync with the serving
+                  # manifests (vllm/ + ray/) or the cache won't be reused.
+                  vllm serve "$MODEL_ID" \
+                    --tokenizer "$MODEL_ID" \
+                    --host 0.0.0.0 --port 8000 \
+                    --tensor-parallel-size "$TENSOR_PARALLEL_SIZE" \
+                    --max-model-len "$MAX_MODEL_LEN" \
+                    --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
+                    --max-num-seqs "$MAX_NUM_SEQS" \
+                    --enable-prefix-caching \
+                    --no-disable-hybrid-kv-cache-manager \
+                    --hf-overrides "$HF_OVERRIDES" \
+                    --additional-config "$ADDITIONAL_CONFIG" &
+                  VLLM_PID=$!
 
-                  # vLLM writes the compiled NEFF tree to /tmp/nxd_model regardless of
-                  # NEURON_COMPILED_ARTIFACTS, so copy it into the model dir before upload.
-                  cp -a /tmp/nxd_model/. "$NEURON_COMPILED_ARTIFACTS/"
+                  # Wait up to 2 hr for compile to finish (health = ready).
+                  ready=0
+                  for i in $(seq 1 720); do
+                    if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+                      echo "vllm serve exited during compile" >&2; break
+                    fi
+                    if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+                      echo "Compile complete, server ready after $((i*10))s"; ready=1; break
+                    fi
+                    sleep 10
+                  done
+                  kill "$VLLM_PID" 2>/dev/null || true
+                  wait "$VLLM_PID" 2>/dev/null || true
+                  if [ "$ready" -ne 1 ]; then echo "Server never became ready" >&2; exit 1; fi
 
-                  # Upload weights + compiled artifacts to S3 (AWS CLI v2 + CRT).
+                  # Upload weights + NEFF cache to S3 (AWS CLI v2 + CRT).
                   apt-get update -qq && apt-get install -y -qq --no-install-recommends curl unzip ca-certificates
                   curl --retry 5 --retry-all-errors --retry-delay 3 -fSL -o /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
                   unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install --update && rm -rf /tmp/awscliv2.zip /tmp/aws
                   aws configure set s3.preferred_transfer_client crt
-                  aws s3 sync "$NEURON_COMPILED_ARTIFACTS/" "$S3_PREFIX/" --exclude ".cache/*"
-                  echo "Uploaded weights + compiled artifacts to $S3_PREFIX"
+                  aws s3 sync "$MODEL_ID/" "$S3_PREFIX/"
+                  echo "Uploaded weights + NEFF cache to $S3_PREFIX"
               volumeMounts:
                 - name: work
                   mountPath: /tmp/models
@@ -203,7 +248,7 @@ resource "kubectl_manifest" "job_model_compile_s3" {
                 type: Directory
   YAML
   depends_on = [
-    kubectl_manifest.karpenter["neuron-trn1-nodepool.yaml"],
+    kubectl_manifest.karpenter["neuron-trn2-nodepool.yaml"],
     module.karpenter,
     module.model_uploader_pod_identity,
     kubectl_manifest.model_uploader_sa,

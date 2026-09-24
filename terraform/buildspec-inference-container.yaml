@@ -11,12 +11,18 @@ phases:
       - echo Building the Docker image...
       - |
         cat > Dockerfile << 'EOF'
-        FROM public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.16.0-neuronx-py312-sdk2.31.1-ubuntu24.04
+        # BASE_IMAGE (vLLM-Neuron DLC) and RAY_VERSION come from CodeBuild env vars,
+        # which Terraform sets from locals (main.tf). Those same two versions compose
+        # the image tag, so the tag always matches what's installed. Ray must match
+        # rayVersion in ray/ray-service-trn2.yaml (2.56.1: py3.13 wheels + KubeRay 1.7.x).
+        ARG BASE_IMAGE
+        FROM ${BASE_IMAGE}
+
+        ARG RAY_VERSION
 
         USER root
 
-        # Install Ray
-        RUN pip install ray[serve]==2.43.0
+        RUN pip install ray[serve]==${RAY_VERSION}
 
         # Create ray user and directories
         RUN useradd -m -s /bin/bash ray && \
@@ -27,14 +33,14 @@ phases:
         WORKDIR /home/ray
 
         # Set environment variables
-        ENV PYTHONPATH="/opt/conda/lib/python3.12/site-packages:/home/ray/python:$PYTHONPATH"
+        ENV PYTHONPATH="/opt/conda/lib/python3.13/site-packages:/home/ray/python:$PYTHONPATH"
         ENV LD_LIBRARY_PATH="/home/ray/anaconda3/lib:$LD_LIBRARY_PATH"
 
         EXPOSE 8000 8265 10001 6379
 
         CMD ["ray", "start", "--head", "--dashboard-host=0.0.0.0", "--dashboard-port=8265"]
         EOF
-      - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+      - docker build --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg RAY_VERSION="$RAY_VERSION" -t $IMAGE_REPO_NAME:$IMAGE_TAG .
       - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
   post_build:
     commands:

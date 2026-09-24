@@ -5,7 +5,7 @@ metadata:
 spec:
   # Static capacity: always keep 1 trn1 node warm (NVMe model cache stays hot,
   # serving pods get an instant local hit). Static nodes are not consolidated.
-  replicas: 1
+  replicas: 0
   template:
     metadata:
       labels:

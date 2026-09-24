@@ -68,11 +68,19 @@ data "aws_ecrpublic_authorization_token" "token" {
 }
 
 locals {
-  name = var.name
+  name   = var.name
   region = var.region
 
   # Globally-unique bucket name for the model cache (S3 path, alternative to FSx)
   s3_bucket_name = "${local.name}-model-storage-${data.aws_caller_identity.current.account_id}-${var.region}"
+
+  # Serving image = vLLM-Neuron DLC base (var.vllm_neuron_base_image) + Ray
+  # (var.ray_version). Those two variables are the single source of truth: they're
+  # injected into the CodeBuild buildspec (FROM + pip) and compose the image tag
+  # below, so the tag encodes exactly what's inside.
+  # e.g. 0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04-ray2.56.1
+  # Immutable per (vLLM, Ray) combo -> no more mutable :latest / stale-pull bug.
+  ray_vllm_image_tag = "ray${var.ray_version}-vllm${split(":", var.vllm_neuron_base_image)[1]}"
 
   tags = {}
 }

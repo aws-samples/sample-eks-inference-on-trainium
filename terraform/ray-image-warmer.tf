@@ -41,7 +41,7 @@ resource "kubectl_manifest" "ray_image_warmer" {
           terminationGracePeriodSeconds: 0
           containers:
             - name: warmer
-              image: ${aws_ecr_repository.ray_vllm.repository_url}:latest
+              image: ${aws_ecr_repository.ray_vllm.repository_url}:${local.ray_vllm_image_tag}
               imagePullPolicy: IfNotPresent
               command: ["/bin/sh", "-c", "sleep infinity"]
               resources:
@@ -52,5 +52,5 @@ resource "kubectl_manifest" "ray_image_warmer" {
                   cpu: 50m
                   memory: 64Mi
   YAML
-  depends_on = [module.eks, aws_ecr_repository.ray_vllm]
+  depends_on        = [module.eks, aws_ecr_repository.ray_vllm]
 }

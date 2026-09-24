@@ -1,8 +1,16 @@
 # demo-neuron-inference-eks
 
-Mistral-7B inference on AWS Neuron (Trainium/Inferentia) served with vLLM + Ray Serve
-on Amazon EKS. Infrastructure is provisioned with Terraform (EKS, Karpenter, S3 model
-cache, observability); the model is served as a `RayService`.
+gpt-oss-20b inference on AWS Neuron (Trainium2) served with vLLM + Ray Serve on
+Amazon EKS. Single-instance, tensor-parallel 8, BF16 on one `trn2.48xlarge`.
+Infrastructure is provisioned with Terraform (EKS, Karpenter, S3 model cache,
+observability); the model is served as a `RayService`.
+
+> **Maturity note (be honest for regulated deployments):** this rides the
+> **standalone vLLM Neuron plugin (0.24, Beta)**, Trn2/Trn3-only. On Trn2 the model
+> runs in **BF16** (the efficient MXFP4 path is Trn3-only). gpt-oss has known Neuron
+> enablement friction — cold compile is **20–40 min** — so budget enablement and
+> accuracy-validation effort. `trn2.48xlarge` is scarce, GTM-gated capacity; use
+> Capacity Blocks for ML rather than blind on-demand.
 
 ## Architecture
 
@@ -10,16 +18,19 @@ cache, observability); the model is served as a `RayService`.
 
 ### Model
 
-- `mistral-7b-v0.3`
+- `openai/gpt-oss-20b`
 - `model-compile-s3` Job — downloads the upstream model from HuggingFace, compiles it
-  to Neuron NEFFs (offline vLLM/NxDI), and pushes the compiled artifacts to S3.
+  to Neuron NEFFs by launching the exact `vllm serve` command (the plugin compiles on
+  first launch, before `/health` goes ready), and pushes the weights + NEFF cache
+  (`VLLM_CACHE_ROOT`) to S3.
 
 ### Serving container
 
-- CodeBuild builds the serving image to ECR: **Ray Serve + vLLM (NxDI) on the Neuron
-  Deep Learning Container** (`vllm-neuronx` 0.16 / SDK 2.31).
-- Init container copies the model from S3 to node-local NVMe (AWS CLI **CRT** client,
-  accelerated parallel copy).
+- CodeBuild builds the serving image to ECR: **Ray Serve + the standalone vLLM Neuron
+  plugin on the Neuron Deep Learning Container**
+  (`vllm-neuronx` 0.24.0.1.1.0 / py3.13 / SDK 2.32).
+- Init container copies the model + NEFF cache from S3 to node-local NVMe (AWS CLI
+  **CRT** client, accelerated parallel copy), so serving skips recompilation.
 - `model-reader` pod SA (EKS Pod Identity) grants inference pods S3 read; the compile
   Job uses a separate `model-uploader` SA (read/write).
 
@@ -31,7 +42,8 @@ cache, observability); the model is served as a `RayService`.
   stack. Everything without a `karpenter` toleration lands here.
 - **Karpenter node pools** (workloads only; tainted `karpenter=true`):
   - `x86-cpu-karpenter` — **static (1 node)**, hosts the Ray head + CPU apps.
-  - neuron — `trn1` **static (1 node)**, `trn2` (ML Capacity Block / reserved), `inf2`.
+  - neuron — `trn2` **static (1 node)**, on an ML Capacity Block (reserved), hosts the
+    gpt-oss-20b worker. Also `trn1` and `inf2` pools for other workloads.
   - gpu — `g6`, `g6e`, `g7`, `g7e`.
   - `ray-image-warmer` DaemonSet pre-pulls the serving image onto every Karpenter node.
 
@@ -67,23 +79,25 @@ add-ons (device plugins, GPU operator/DCGM, KubeRay, monitoring). The apply also
 **Cold-start optimizations.** Two things here cut Ray cluster + model bootstrap from
 **5+ minutes to ~1 minute**:
 
-- **Static Karpenter nodes** — the `neuron-trn1` and `x86-cpu-karpenter` pools run in
+- **Static Karpenter nodes** — the `neuron-trn2` and `x86-cpu-karpenter` pools run in
   static mode (`replicas: 1`), so a Neuron worker node and an x86 Ray head node are kept
   warm and ready.
 - **Ray image warmer** — a DaemonSet (`ray-image-warmer`, kube-system) pre-pulls the
   multi-GB Ray + vLLM image onto every Karpenter node, so Ray head/worker pods start
   from a cached image instead of pulling it at launch.
 
-**Note**: The vLLM config (model, tensor-parallel size, max sequence length, max
-num seqs, dtype) **must match** between the compile job and the serving containers,
-or the compiled artifacts won't be reused and the model recompiles at serve time. 
-The same config it's defined via env vars across the compile job and both serving paths (vLLM, Ray).
+**Note**: The vLLM config (model, tensor-parallel size, max sequence length, max num
+seqs, max num batched tokens, and the `--hf-overrides` / `--additional-config` JSON
+blobs) **must match** between the compile job and the serving containers, or the
+NEFF cache won't be reused and the model recompiles at serve time (20–40 min). The
+scalar knobs are env vars across the compile job and both serving paths (vLLM, Ray);
+the two JSON flags are inlined identically in each manifest.
 
 Point `kubectl` at the new cluster and wait for the compile job (it can take a while):
 
 ```bash
 aws eks update-kubeconfig --region us-east-2 --name demo-neuron-eks
-kubectl wait --for=condition=complete job/model-compile-s3 --timeout=60m
+kubectl wait --for=condition=complete job/model-compile-s3 --timeout=80m
 ```
 
 Export the values the manifests need (used in the next two steps):
@@ -100,29 +114,30 @@ Bring vLLM up by itself first — the quickest way to confirm the model, the S3 
 Neuron all work, with clean single-container logs and no Ray moving parts.
 
 ```bash
-envsubst '$S3_BUCKET_NAME $AWS_REGION' < vllm/mistral-vllm-deployment.yaml | kubectl apply -f -
+envsubst '$S3_BUCKET_NAME $AWS_REGION' < vllm/gpt-oss-vllm-deployment.yaml | kubectl apply -f -
 ```
 
 Expose the vLLM endpoint locally (optionally watch startup first with
-`kubectl logs -f deploy/vllm-mistral7b -c vllm`):
+`kubectl logs -f deploy/vllm-gpt-oss-20b -c vllm`):
 
 ```bash
-kubectl port-forward svc/vllm-mistral7b 8080:8080
+kubectl port-forward svc/vllm-gpt-oss-20b 8080:8080
 ```
 
-In another shell, hit the OpenAI-compatible endpoint:
+In another shell, hit the OpenAI-compatible endpoint (this path runs vLLM's built-in
+OpenAI server, which parses the harmony format server-side):
 
 ```bash
 curl http://localhost:8080/v1/models
 curl -s http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "/tmp/models/mistral-7b-v0.3", "messages": [{"role": "user", "content": "Hello"}]}' | jq
+  -d '{"model": "/tmp/models/gpt-oss-20b", "messages": [{"role": "user", "content": "Hello"}]}' | jq
 ```
 
 Once inference works, tear it down before deploying Ray (frees the Neuron node):
 
 ```bash
-kubectl delete -f vllm/mistral-vllm-deployment.yaml
+kubectl delete -f vllm/gpt-oss-vllm-deployment.yaml
 ```
 
 ## 3. Deploy the model on Ray Serve
@@ -130,17 +145,20 @@ kubectl delete -f vllm/mistral-vllm-deployment.yaml
 Create the serving-script ConfigMap, then apply the `RayService`:
 
 ```bash
-kubectl create configmap mistral7b-vllm-script --from-file=mistral7b_vllm.py=ray/mistral7b_vllm.py --dry-run=client -o yaml | kubectl apply -f -
-envsubst '$CUSTOM_RAY_VLLM_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-trn1.yaml | kubectl apply -f -
+kubectl create configmap gpt-oss-20b-vllm-script --from-file=gpt_oss_20b_vllm.py=ray/gpt_oss_20b_vllm.py --dry-run=client -o yaml | kubectl apply -f -
+envsubst '$CUSTOM_RAY_VLLM_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-trn2.yaml | kubectl apply -f -
 ```
 
-Karpenter provisions the nodes (head on the x86 pool, worker on the neuron-trn1 pool),
+Karpenter provisions the nodes (head on the x86 pool, worker on the neuron-trn2 pool),
 the worker pulls the model from S3 to local NVMe, and Ray Serve starts the deployment.
 
-Watch progress on the Ray dashboard (port 8265 on the head):
+Watch progress on the Ray dashboard (port 8265 on the head). The head service
+carries a per-cluster hash suffix, so select it by label instead of guessing the
+name — the head pod (and dashboard) come up well before the workers or Serve:
 
 ```bash
-kubectl port-forward svc/ray-mistral7b-head-svc 8265:8265
+RAY_HEAD_SVC=$(kubectl get svc -l ray.io/node-type=head -o name)
+kubectl port-forward "$RAY_HEAD_SVC" 8265:8265
 ```
 
 Open http://localhost:8265 to visualize the Ray dashboard.
@@ -148,15 +166,15 @@ Open http://localhost:8265 to visualize the Ray dashboard.
 Expose Ray cluster endpoint locally:
 
 ```bash
-kubectl wait --for=condition=Ready rayservice/ray-mistral7b --timeout=1200s
-kubectl port-forward svc/ray-mistral7b-serve-svc 8000:8000
+kubectl wait --for=condition=Ready rayservice/ray-gpt-oss-20b --timeout=1200s
+kubectl port-forward svc/ray-gpt-oss-20b-serve-svc 8000:8000
 ```
 In another shell, hit the Ray cluster endpoint with an inference request:
 
 ```bash
 curl -s http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "/tmp/models/mistral-7b-v0.3", "messages": [{"role": "user", "content": "Hello"}]}' | jq
+  -d '{"model": "/tmp/models/gpt-oss-20b", "messages": [{"role": "user", "content": "Hello"}]}' | jq
 ```
 
 ## 4. Observability
@@ -225,7 +243,7 @@ chat endpoint) and set the time range to the last 15 minutes if a panel looks em
 Expose Ray cluster endpoint locally:
 
 ```bash
-kubectl port-forward svc/ray-mistral7b-serve-svc 8000:8000
+kubectl port-forward svc/ray-gpt-oss-20b-serve-svc 8000:8000
 ```
 
 Send multiple inference requests
@@ -233,5 +251,125 @@ Send multiple inference requests
 ```bash
 seq 1 100 | xargs -P 4 -I{} curl -s http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"/tmp/models/mistral-7b-v0.3","messages":[{"role":"user","content":"Hello"}]}' -o /dev/null
+  -d '{"model":"/tmp/models/gpt-oss-20b","messages":[{"role":"user","content":"Hello"}]}' -o /dev/null
 ```
+
+## 5. Benchmark inference performance
+
+Measure how the deployment actually performs under load with
+[inference-perf](https://github.com/kubernetes-sigs/inference-perf), a
+model-server-agnostic load generator that runs as a Kubernetes Job and writes
+results to S3. The [`benchmark/`](benchmark/) Helm chart packages it into
+tests that each answer one question:
+
+| Test | Question | Load |
+|---|---|---|
+| **latency** | Lowest p50/p95 latency? | 1 req/s, deterministic 512/128 tokens (synthetic floor) |
+| **throughput** | Highest sustained output tokens/sec? | auto sweep on synthetic traffic until p95 latency degrades |
+| **chat** | Realistic sustained throughput? | auto sweep on real **ShareGPT** prompts, bursty arrivals |
+| **cost/performance** | Best tokens per dollar? | *derived* — sweep peak ÷ node $/hr |
+
+The **chat** test is the defensible, apples-to-apples number to quote for a chat
+app: it replays real ShareGPT conversations (natural length variance, bursty
+arrivals) rather than a fixed synthetic size. inference-perf auto-downloads the
+ShareGPT dataset from HuggingFace at job start, so the benchmark pod needs
+outbound internet (same as the tokenizer download). To benchmark a different
+corpus (e.g. UltraChat), convert it to the ShareGPT JSON schema, mount it, and
+set `benchmark.tests.chat.data.path`.
+
+The procedure is **endpoint-agnostic**: because standalone vLLM and Ray Serve
+both expose the same OpenAI-compatible API and serve the same model, the only
+thing that changes between runs is the target URL and a label. Run the section
+once against whatever you deployed; run it again with a different `--set
+benchmark.target.label=` to benchmark another endpoint and compare the two S3
+folders (and Grafana time ranges) yourself.
+
+### Setup
+
+Point at the endpoint you deployed (§2 vLLM or §3 Ray) and set the node price
+used for the cost/performance number:
+
+```bash
+export S3_BUCKET_NAME="genai-models-$(aws sts get-caller-identity --query Account --output text)"
+
+# --- pick ONE target ---
+# Standalone vLLM (§2):
+export TARGET_LABEL=vllm
+export TARGET_URL=http://vllm-gpt-oss-20b.default.svc.cluster.local:8080
+# Ray Serve (§3):
+# export TARGET_LABEL=ray
+# export TARGET_URL=http://ray-gpt-oss-20b-serve-svc.default.svc.cluster.local:8000
+
+# Node on-demand price for cost/perf (default assumes one trn2.48xlarge).
+export NODE_HOURLY_USD=35.0
+```
+
+Confirm the endpoint is reachable from inside the cluster and inspect the chart
+defaults:
+
+```bash
+kubectl run curl-check --rm -it --restart=Never --image=curlimages/curl -- \
+  curl -s "$TARGET_URL/v1/models"
+```
+
+### Run
+
+One install creates a single Job that runs the tests **sequentially** in one pod
+(latency → throughput → chat), so the latency numbers are measured under zero
+competing load before the sweeps saturate the endpoint:
+
+```bash
+helm install "$TARGET_LABEL" benchmark/ \
+  -n default \
+  --set benchmark.storage.s3.bucketName="$S3_BUCKET_NAME" \
+  --set benchmark.target.label="$TARGET_LABEL" \
+  --set benchmark.target.baseUrl="$TARGET_URL" \
+  --set benchmark.cost.hourlyUsd="$NODE_HOURLY_USD"
+```
+
+Or edit `benchmark/values.yaml` for additional test configuration (enable/disable
+tests, change `runOrder`, tune sweep sizes).
+
+Wait for the Job to finish (all tests run in sequence, so this takes a few min):
+
+```bash
+kubectl wait --for=condition=complete job \
+  -l benchmark.target="$TARGET_LABEL" -n default --timeout=900s
+```
+
+Follow progress with `kubectl logs -n default -l benchmark.target=$TARGET_LABEL -f`.
+Results land in S3 under `benchmarks/<label>/<test>/`.
+
+### Visualize
+
+**Client-side metrics** — [`benchmark/visualize.py`](benchmark/visualize.py) pulls
+the latest latency, throughput, and chat summaries from S3 and prints the answers:
+
+```bash
+benchmark/visualize.py \
+  --bucket "$S3_BUCKET_NAME" \
+  --label "$TARGET_LABEL" \
+  --hourly-usd "$NODE_HOURLY_USD"
+```
+
+**Engine + hardware metrics** — while the throughput Job runs (or set the
+Grafana time range to the last 15 min afterward), open the dashboards from §4
+that match your target to see *why* the numbers look the way they do:
+
+- **vLLM** — request queue time, KV-cache utilization, scheduler state
+- **Ray Serve** — replica load and queueing (Ray target only)
+- **Neuron-Monitor** — NeuronCore utilization and HW throughput on the trn2 node
+
+The client-side table tells you *what* the endpoint delivers; the Neuron/vLLM
+dashboards tell you *why* it saturates where it does.
+
+### Cleanup
+
+```bash
+helm uninstall "$TARGET_LABEL" -n default
+```
+
+To benchmark another endpoint, deploy it (§2/§3), re-export `TARGET_LABEL` +
+`TARGET_URL` (and `NODE_HOURLY_USD` if the instance differs), and repeat.
+Results accumulate under separate `benchmarks/<label>/` prefixes for
+side-by-side comparison.
