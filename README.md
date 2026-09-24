@@ -8,6 +8,8 @@ observability); the model is served as a `RayService`.
 > **Important:** the Neuron inference stack is converging on the [vLLM Neuron plugin](https://github.com/vllm-project/vllm-neuron)
 > (currently **Beta**, Trn2/Trn3-only). When adopting this solution, track the
 > plugin's beta status and maturity, and confirm you can secure Trn2 capacity.
+> To run a previous version of this demo based on the older vLLM+NxDI Neuron plugin 
+> on Trn1 instances, switch to **branch vllm-nxdi-0.16**.
 
 ## Architecture
 
@@ -408,17 +410,28 @@ Measured on the standalone vLLM endpoint (`label=vllm`).
 
 ## 6. Teardown
 
-Tear the whole demo down with Terraform. First remove the serving workloads so
-Karpenter releases the (expensive, capacity-blocked) trn2 node, then destroy the
-infrastructure:
+Delete the workloads and Karpenter node pools **first** so Karpenter (still running)
+terminates the nodes it launched, then let Terraform remove the rest. Otherwise those
+instances orphan and block VPC/subnet/SG deletion.
 
 ```bash
-# Delete serving workloads (ignore errors if already gone)
+# 1. Delete the serving workloads.
 helm uninstall "$TARGET_LABEL" -n default 2>/dev/null || true
 kubectl delete -f vllm/gpt-oss-vllm-deployment.yaml 2>/dev/null || true
 kubectl delete rayservice ray-gpt-oss-20b 2>/dev/null || true
 
-# Destroy all infrastructure (EKS cluster, Karpenter nodes, S3 bucket, add-ons)
+# 2. Delete the Karpenter node pools (+ node classes / claims) so Karpenter
+#    terminates every instance it launched — static pools included.
+kubectl delete nodepools --all
+kubectl delete ec2nodeclasses --all
+kubectl delete nodeclaims --all      # catch any stragglers
+
+# 3. Wait until all non-MNG nodes are gone. Karpenter nodes carry the
+#    karpenter.sh/nodepool label; the managed node group nodes do not. Proceed
+#    only when this prints "No resources found" (instances have terminated).
+kubectl get nodes -l karpenter.sh/nodepool -w    # Ctrl-C once empty
+
+# 4. Now destroy — no orphaned Karpenter instances left to block the VPC.
 terraform -chdir=terraform destroy
 ```
 
