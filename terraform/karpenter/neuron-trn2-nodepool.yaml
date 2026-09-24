@@ -27,10 +27,10 @@ spec:
         - key: "kubernetes.io/arch"
           operator: In
           values: ["amd64"]
-        # Pin to the reservation's AZ (cr-010b7bafdf7c6c192 is in us-east-2b).
+        # Pin to the reservation's AZ (var.trn2_capacity_reservation_az).
         - key: "topology.kubernetes.io/zone"
           operator: In
-          values: ["us-east-2b"]
+          values: ["${trn2_capacity_reservation_az}"]
         # Use the ML Capacity Block declared on the neuron NodeClass. Reserved
         # capacity is the only option here; add "on-demand" back to fall back if
         # the reservation is exhausted/ended (note: capacity blocks end at their

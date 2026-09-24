@@ -116,10 +116,12 @@ resource "kubectl_manifest" "karpenter" {
 
   server_side_apply = true
   yaml_body = templatefile("${path.module}/karpenter/${each.value}", {
-    name            = local.name
-    x86_ami_name    = var.x86_ami_name
-    neuron_ami_name = var.neuron_ami_name
-    gpu_ami_name    = var.gpu_ami_name
+    name                         = local.name
+    x86_ami_name                 = var.x86_ami_name
+    neuron_ami_name              = var.neuron_ami_name
+    gpu_ami_name                 = var.gpu_ami_name
+    trn2_capacity_reservation_id = var.trn2_capacity_reservation_id
+    trn2_capacity_reservation_az = var.trn2_capacity_reservation_az
   })
 
   depends_on = [

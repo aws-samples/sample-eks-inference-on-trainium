@@ -27,9 +27,9 @@ spec:
   # ML Capacity Block reservations. Karpenter only launches into a reservation
   # when a NodePool's requirements (instance-family, AZ, ...) match it, so this
   # is safe to share with the trn1/inf2 pools - only neuron-trn2 (reserved,
-  # trn2) will use cr-010b7bafdf7c6c192.
+  # trn2) will use it. ID comes from var.trn2_capacity_reservation_id.
   capacityReservationSelectorTerms:
-    - id: cr-010b7bafdf7c6c192
+    - id: ${trn2_capacity_reservation_id}
   tags:
     karpenter.sh/discovery: "${name}"
     aws-neuron: "true"

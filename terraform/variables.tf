@@ -39,6 +39,18 @@ variable "gpu_ami_name" {
   default     = "amazon-eks-node-al2023-x86_64-nvidia-1.36-v20260903"
 }
 
+variable "trn2_capacity_reservation_id" {
+  description = "ML Capacity Block / EC2 Capacity Reservation ID for the trn2 pool. Written into the neuron NodeClass capacityReservationSelectorTerms; only the reserved neuron-trn2 NodePool consumes it."
+  type        = string
+  default     = ""
+}
+
+variable "trn2_capacity_reservation_az" {
+  description = "Availability zone the trn2 capacity reservation lives in. The neuron-trn2 NodePool pins here so reserved launches land in the right AZ."
+  type        = string
+  default     = ""
+}
+
 variable "vllm_neuron_base_image" {
   description = "vLLM-Neuron DLC base image the serving container is built FROM. The serving image tag is derived from this + ray_version."
   type        = string

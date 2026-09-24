@@ -5,12 +5,9 @@ Amazon EKS. Single-instance, tensor-parallel 8, BF16 on one `trn2.48xlarge`.
 Infrastructure is provisioned with Terraform (EKS, Karpenter, S3 model cache,
 observability); the model is served as a `RayService`.
 
-> **Maturity note (be honest for regulated deployments):** this rides the
-> **standalone vLLM Neuron plugin (0.24, Beta)**, Trn2/Trn3-only. On Trn2 the model
-> runs in **BF16** (the efficient MXFP4 path is Trn3-only). gpt-oss has known Neuron
-> enablement friction — cold compile is **20–40 min** — so budget enablement and
-> accuracy-validation effort. `trn2.48xlarge` is scarce, GTM-gated capacity; use
-> Capacity Blocks for ML rather than blind on-demand.
+> **Important:** the Neuron inference stack is converging on the [vLLM Neuron plugin](https://github.com/vllm-project/vllm-neuron)
+> (currently **Beta**, Trn2/Trn3-only). When adopting this solution, track the
+> plugin's beta status and maturity, and confirm you can secure Trn2 capacity.
 
 ## Architecture
 
@@ -32,11 +29,11 @@ observability); the model is served as a `RayService`.
 - Init container copies the model + NEFF cache from S3 to node-local NVMe (AWS CLI
   **CRT** client, accelerated parallel copy), so serving skips recompilation.
 - `model-reader` pod SA (EKS Pod Identity) grants inference pods S3 read; the compile
-  Job uses a separate `model-uploader` SA (read/write).
+  Job uses a separate `model-uploader` SA (S3 read/write).
 
 ### EKS cluster
 
-- **Addons** — vpc-cni, CoreDNS, kube-proxy, EKS Pod Identity agent, node-monitoring.
+- **Addons** — kuberay operator, vpc-cni, CoreDNS, kube-proxy, EKS Pod Identity agent, node-monitoring.
 - **Managed Node Group** (AL2023 x86) — runs the cluster control plane: Karpenter
   controller, CoreDNS, AWS LB Controller, KubeRay operator, and the Prometheus/Grafana
   stack. Everything without a `karpenter` toleration lands here.
@@ -86,14 +83,14 @@ add-ons (device plugins, GPU operator/DCGM, KubeRay, monitoring). The apply also
   multi-GB Ray + vLLM image onto every Karpenter node, so Ray head/worker pods start
   from a cached image instead of pulling it at launch.
 
-**Note**: The vLLM config (model, tensor-parallel size, max sequence length, max num
-seqs, max num batched tokens, and the `--hf-overrides` / `--additional-config` JSON
-blobs) **must match** between the compile job and the serving containers, or the
-NEFF cache won't be reused and the model recompiles at serve time (20–40 min). The
-scalar knobs are env vars across the compile job and both serving paths (vLLM, Ray);
-the two JSON flags are inlined identically in each manifest.
+> **Important:** The vLLM config (model, tensor-parallel size, max sequence length, max num
+> seqs, max num batched tokens, and the `--hf-overrides` / `--additional-config` JSON
+> blobs) **must match** between the compile job and the serving containers, or the
+> NEFF cache won't be reused and the model recompiles at serve time (20–40 min). The
+> scalar knobs are env vars across the compile job and both serving paths (vLLM, Ray);
+> the two JSON flags are inlined identically in each manifest.
 
-Point `kubectl` at the new cluster and wait for the compile job (it can take a while):
+Point `kubectl` at the new cluster and wait for the compile job:
 
 ```bash
 aws eks update-kubeconfig --region us-east-2 --name demo-neuron-eks
@@ -108,7 +105,7 @@ export S3_BUCKET_NAME="$(terraform -chdir=terraform output -raw model_storage_bu
 export CUSTOM_RAY_VLLM_IMAGE="$(terraform -chdir=terraform output -raw ray_vllm_image_uri)"
 ```
 
-## 2. Validate inference with standalone vLLM (no Ray)
+## 2. Validate inference with standalone vLLM deployment
 
 Bring vLLM up by itself first — the quickest way to confirm the model, the S3 pull, and
 Neuron all work, with clean single-container logs and no Ray moving parts.
@@ -393,16 +390,6 @@ Measured on the standalone vLLM endpoint (`label=vllm`).
 | Output throughput (tokens/s) | — | — | 217.8 (peak) |
 | Request throughput (req/s) | — | — | 1.0 (peak) |
 
-### Remove the benchmark run
-
-```bash
-helm uninstall "$TARGET_LABEL" -n default
-```
-
-To benchmark another endpoint, deploy it (§2/§3), re-export `TARGET_LABEL` +
-`TARGET_URL` (and `NODE_HOURLY_USD` if the instance differs), and repeat.
-Results accumulate under separate `benchmarks/<label>/` prefixes for
-side-by-side comparison.
 
 ## 6. Teardown
 
