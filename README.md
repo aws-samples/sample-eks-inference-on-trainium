@@ -65,6 +65,21 @@ observability); the model is served as a `RayService`.
 Run everything from the repository root. Terraform commands use `-chdir=terraform`
 so the outputs stay reachable when you deploy Ray in the next step.
 
+First, create your config from the example and set the **required** values — your
+AWS region and your trn2 ML Capacity Block (ID + its AZ). These have no working
+defaults; without them the trn2 node can't launch. The rest of the variables ship
+with validated defaults you can keep.
+
+```bash
+cp terraform/example.tfvars terraform/terraform.tfvars
+# edit terraform/terraform.tfvars:
+#   region                       = "..."      # where your Capacity Block lives
+#   trn2_capacity_reservation_id = "cr-..."   # aws ec2 describe-capacity-reservations
+#   trn2_capacity_reservation_az = "..."      # the reservation's AZ (must match)
+```
+
+Then init and apply (Terraform auto-loads `terraform.tfvars`):
+
 ```bash
 terraform -chdir=terraform init
 terraform -chdir=terraform apply
