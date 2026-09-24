@@ -174,7 +174,7 @@ curl -s http://localhost:8000/v1/chat/completions \
   -d '{"model": "/tmp/models/gpt-oss-20b", "messages": [{"role": "user", "content": "Hello"}]}' | jq
 ```
 
-## 4. Observability
+## 4. Monitor inference metrics
 
 The observability stack is provisioned by Terraform (§1) — you don't deploy it by
 hand. In the `monitoring` namespace you get:
