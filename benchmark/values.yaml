@@ -77,86 +77,54 @@ benchmark:
       model: gpt-oss-20b
 
   # Tests run SEQUENTIALLY in one pod in this order (a test is skipped if it is
-  # not enabled below). latency runs first, under zero competing load, so its
-  # numbers aren't polluted by the throughput/chat sweeps saturating the endpoint.
+  # not enabled below). chat-latency runs first, under zero competing load, so its
+  # numbers aren't polluted by chat-throughput saturating the endpoint.
   runOrder:
-    - latency
-    - throughput
-    - chat
+    - chat-latency
+    - chat-throughput
 
   # ---- The tests ---------------------------------------------------------------
-  # latency    : lowest p50/p95 — 1 rps, deterministic synthetic sizes, zero
-  #              contention. A controlled microbenchmark (best-case latency floor).
-  # throughput : highest sustained output tok/s — a `sweep` auto-discovers the
-  #              saturation point on a controlled synthetic distribution. Its peak
-  #              also feeds the cost/performance number.
-  # chat       : realistic workload — replays real ShareGPT chat prompts (variable
-  #              lengths, natural distribution) under a sweep. This is the
-  #              defensible, apples-to-apples number to quote for a chat app.
+  # Both tests use the SAME realistic ShareGPT chat workload (real prompts,
+  # natural lengths, generation stops at EOS) and differ only in load, so the
+  # numbers form one coherent story for a chat app:
+  #   chat-latency    : single-request floor at 1 rps — best-case p50/p95 TTFT/ITL.
+  #   chat-throughput : rates ramped to saturation — peak sustained output tok/s,
+  #                     which also feeds the cost/performance number.
   #
-  # Each test sets data.type (default synthetic). synthetic/random use the
-  # input/output distributions; dataset types (shareGPT, ...) draw real prompts and
-  # ignore the distributions. shareGPT auto-downloads from HuggingFace at job start
-  # (the pod already needs HF egress for the tokenizer); set data.path to load from
-  # a pre-staged file instead.
+  # ShareGPT auto-downloads from HuggingFace at job start (the pod already needs HF
+  # egress for the tokenizer); set data.path to load from a pre-staged file.
   tests:
-    latency:
+    chat-latency:
       enabled: true
-      description: "Lowest p50/p95 latency under zero contention"
+      description: "Best-case p50/p95 latency on real ShareGPT prompts (1 rps)"
       data:
-        type: synthetic
-        # Must be >= total requests this test makes (rate 1 x 60s = ~60); generous.
-        totalCount: 5000
-        input:  { mean: 512, stdDev: 0, min: 512, max: 512 }
-        output: { mean: 128, stdDev: 0, min: 128, max: 128 }
+        type: shareGPT
+      ignoreEos: false
       load:
         type: constant
         numWorkers: 4
         stages:
-          - { rate: 1, duration: 60 }
+          - { rate: 1, duration: 30 }
 
-    throughput:
+    chat-throughput:
       enabled: true
-      description: "Highest sustained output token throughput (synthetic sweep)"
+      description: "Sustained output token throughput on real ShareGPT prompts"
+      # Real ShareGPT chat prompts (auto-downloaded from HuggingFace) instead of a
+      # synthetic distribution, so throughput reflects a realistic workload.
       data:
-        type: synthetic
-        # Sweep draws many requests across warmup + stages; keep well above
-        # numRequests x numStages so length arrays never run out.
-        totalCount: 100000
-        input:  { mean: 512, stdDev: 128, min: 128, max: 2048 }
-        output: { mean: 256, stdDev: 64,  min: 32,  max: 512 }
+        type: shareGPT
+      # Let generation stop at EOS so output lengths are real (ignore_eos=true
+      # would force fixed-length decode, distorting the throughput number).
+      ignoreEos: false
       load:
         type: constant
         numWorkers: 8
-        # Geometric sweep: inference-perf ramps the rate across numStages, stops
-        # when the saturationPercentile latency degrades, and reports the peak.
-        # Kept short (2 x 45s + drain ~= 2-3 min) for demo turnaround; raise
-        # numRequests/stageDuration for a more statistically stable result.
-        sweep:
-          type: geometric
-          numRequests: 400
-          timeout: 180
-          numStages: 2
-          stageDuration: 30
-          saturationPercentile: 95
+        # Fixed increasing rates instead of an auto-sweep: with max_num_seqs=4 the
+        # saturation point is already known (the server batches 4), so the sweep's
+        # calibration stage (Stage -1) just wastes time and times out. Read peak
+        # output tok/s off the stage where TTFT balloons but throughput plateaus.
+        stages:
+          - { rate: 1, duration: 30 }
+          - { rate: 2, duration: 30 }
+          - { rate: 4, duration: 30 }
 
-    chat:
-      enabled: true
-      description: "Realistic ShareGPT chat workload (auto saturation sweep)"
-      data:
-        type: shareGPT
-        # Auto-downloads ShareGPT_V3 from HuggingFace when unset. To use a
-        # pre-staged/converted file (e.g. UltraChat reformatted to ShareGPT
-        # schema), mount it and set the in-container path here:
-        # path: /workspace/data/sharegpt.json
-      load:
-        type: poisson   # bursty arrivals, closer to real traffic
-        numWorkers: 8
-        # Short sweep for demo turnaround (~2-3 min); raise for stable numbers.
-        sweep:
-          type: geometric
-          numRequests: 400
-          timeout: 180
-          numStages: 2
-          stageDuration: 45
-          saturationPercentile: 95

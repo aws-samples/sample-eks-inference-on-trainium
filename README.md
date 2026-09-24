@@ -262,20 +262,20 @@ model-server-agnostic load generator that runs as a Kubernetes Job and writes
 results to S3. The [`benchmark/`](benchmark/) Helm chart packages it into
 tests that each answer one question:
 
+Both tests use the **same real ShareGPT chat workload** (natural prompt lengths,
+generation stops at EOS) and differ only in load, so the numbers form one
+coherent story for a chat app:
+
 | Test | Question | Load |
 |---|---|---|
-| **latency** | Lowest p50/p95 latency? | 1 req/s, deterministic 512/128 tokens (synthetic floor) |
-| **throughput** | Highest sustained output tokens/sec? | auto sweep on synthetic traffic until p95 latency degrades |
-| **chat** | Realistic sustained throughput? | auto sweep on real **ShareGPT** prompts, bursty arrivals |
-| **cost/performance** | Best tokens per dollar? | *derived* — sweep peak ÷ node $/hr |
+| **chat-latency** | Best-case p50/p95 latency? | 1 req/s, single-request floor |
+| **chat-throughput** | Highest sustained output tokens/sec? | rates ramped (1→2→4 req/s) into saturation |
+| **cost/performance** | Best tokens per dollar? | *derived* — throughput peak ÷ node $/hr |
 
-The **chat** test is the defensible, apples-to-apples number to quote for a chat
-app: it replays real ShareGPT conversations (natural length variance, bursty
-arrivals) rather than a fixed synthetic size. inference-perf auto-downloads the
-ShareGPT dataset from HuggingFace at job start, so the benchmark pod needs
-outbound internet (same as the tokenizer download). To benchmark a different
-corpus (e.g. UltraChat), convert it to the ShareGPT JSON schema, mount it, and
-set `benchmark.tests.chat.data.path`.
+inference-perf auto-downloads the ShareGPT dataset from HuggingFace at job start,
+so the benchmark pod needs outbound internet (same as the tokenizer download). To
+benchmark a different corpus (e.g. UltraChat), convert it to the ShareGPT JSON
+schema, mount it, and set the test's `data.path`.
 
 The procedure is **endpoint-agnostic**: because standalone vLLM and Ray Serve
 both expose the same OpenAI-compatible API and serve the same model, the only
@@ -290,7 +290,7 @@ Point at the endpoint you deployed (§2 vLLM or §3 Ray) and set the node price
 used for the cost/performance number:
 
 ```bash
-export S3_BUCKET_NAME="genai-models-$(aws sts get-caller-identity --query Account --output text)"
+export S3_BUCKET_NAME="$(terraform -chdir=terraform output -raw model_storage_bucket)"
 
 # --- pick ONE target ---
 # Standalone vLLM (§2):
@@ -363,7 +363,37 @@ that match your target to see *why* the numbers look the way they do:
 The client-side table tells you *what* the endpoint delivers; the Neuron/vLLM
 dashboards tell you *why* it saturates where it does.
 
-### Cleanup
+### Reference results
+
+Measured on the standalone vLLM endpoint (`label=vllm`).
+
+**Measured configuration**
+
+| Parameter | Value |
+|---|---|
+| Model | `openai/gpt-oss-20b` (BF16) |
+| Hardware | 1× `trn2.48xlarge`, tensor-parallel 8 |
+| Context window (`max_model_len`) | 16384 |
+| Max batched tokens (`max_num_batched_tokens`) | 8192 |
+| Max batch (`max_num_seqs`) | 4 |
+| Prefix caching / segmented prefill | enabled |
+| Workload / dataset | **ShareGPT** — real chat prompts, natural input/output lengths, generation stops at EOS (auto-downloaded from HuggingFace) |
+| API | OpenAI `completion`, streaming |
+| Load — latency test | constant 1 req/s, 30 s, 4 workers |
+| Load — throughput test | constant, ramped 1 → 2 → 4 req/s, 30 s per stage, 8 workers |
+
+**Results** (0% errors; latency rows from the 1 rps zero-contention test, throughput from the ramped test's peak stage)
+
+| Metric | Median | p90 | Mean |
+|---|---|---|---|
+| TTFT — time to first token (ms) | 481 | 1,550 | 842 |
+| ITL — inter-token latency (ms) | 11.6 | 11.7 | 16.5 |
+| TPOT — time per output token (ms) | 15.5 | 26.8 | 31.9 |
+| Request latency (s) | 2.87 | 9.79 | 3.79 |
+| Output throughput (tokens/s) | — | — | 217.8 (peak) |
+| Request throughput (req/s) | — | — | 1.0 (peak) |
+
+### Remove the benchmark run
 
 ```bash
 helm uninstall "$TARGET_LABEL" -n default
@@ -373,3 +403,28 @@ To benchmark another endpoint, deploy it (§2/§3), re-export `TARGET_LABEL` +
 `TARGET_URL` (and `NODE_HOURLY_USD` if the instance differs), and repeat.
 Results accumulate under separate `benchmarks/<label>/` prefixes for
 side-by-side comparison.
+
+## 6. Teardown
+
+Tear the whole demo down with Terraform. First remove the serving workloads so
+Karpenter releases the (expensive, capacity-blocked) trn2 node, then destroy the
+infrastructure:
+
+```bash
+# Delete serving workloads (ignore errors if already gone)
+helm uninstall "$TARGET_LABEL" -n default 2>/dev/null || true
+kubectl delete -f vllm/gpt-oss-vllm-deployment.yaml 2>/dev/null || true
+kubectl delete rayservice ray-gpt-oss-20b 2>/dev/null || true
+
+# Destroy all infrastructure (EKS cluster, Karpenter nodes, S3 bucket, add-ons)
+terraform -chdir=terraform destroy
+```
+
+> **This is irreversible.** `terraform destroy` deletes the EKS cluster, the
+> Karpenter nodes, the observability stack, and the S3 model-cache bucket
+> (weights + NEFF cache + benchmark results). Back up anything you want to keep
+> from S3 first. Review the plan before confirming.
+
+
+
+

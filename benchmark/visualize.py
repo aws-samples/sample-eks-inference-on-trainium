@@ -20,27 +20,47 @@ import subprocess
 import sys
 
 
+# Region for all S3 calls. Set from the bucket's actual location so cp/HeadObject
+# don't fail with "301 Moved Permanently" when the CLI default region differs.
+_REGION: str | None = None
+
+
 def _aws(*args: str) -> str:
-    return subprocess.run(
-        ["aws", *args], capture_output=True, text=True, check=True
-    ).stdout
+    cmd = ["aws", *args]
+    if _REGION:
+        cmd += ["--region", _REGION]
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+
+
+def resolve_region(bucket: str) -> str:
+    """Return the bucket's region (us-east-1 reports empty LocationConstraint)."""
+    out = _aws(
+        "s3api", "get-bucket-location", "--bucket", bucket,
+        "--query", "LocationConstraint", "--output", "text",
+    ).strip()
+    return "us-east-1" if out in ("", "None", "null") else out
 
 
 def latest_summary(bucket: str, label: str, test: str) -> dict | None:
-    """Return the parsed summary_lifecycle_metrics.json for the most recent run."""
+    """Return the parsed summary_lifecycle_metrics.json for the most recent run,
+    or None if there are no runs for this label/test under the bucket."""
     prefix = f"benchmarks/{label}/{test}/"
     try:
         listing = _aws("s3", "ls", f"s3://{bucket}/{prefix}", "--recursive")
     except subprocess.CalledProcessError:
         return None
-    keys = sorted(
-        line.split()[-1]
-        for line in listing.splitlines()
-        if line.strip().endswith("summary_lifecycle_metrics.json")
-    )
-    if not keys:
+    # `aws s3 ls --recursive` lines are: <date> <time> <size> <key>. Pick the
+    # summary file with the latest (date, time) so the newest run wins regardless
+    # of its random folder suffix.
+    runs = []
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[-1].endswith("summary_lifecycle_metrics.json"):
+            runs.append((parts[0] + " " + parts[1], parts[-1]))
+    if not runs:
         return None
-    body = _aws("s3", "cp", f"s3://{bucket}/{keys[-1]}", "-")
+    runs.sort()
+    body = _aws("s3", "cp", f"s3://{bucket}/{runs[-1][1]}", "-")
     return json.loads(body)
 
 
@@ -56,43 +76,43 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    if not args.bucket or not args.label:
+        ap.error(
+            "--bucket and --label must be non-empty "
+            f"(got bucket={args.bucket!r}, label={args.label!r}); "
+            "check that $S3_BUCKET_NAME and $TARGET_LABEL are exported."
+        )
+
+    global _REGION
+    _REGION = resolve_region(args.bucket)
+
     print(f"\n=== Benchmark results: {args.label} ===\n")
 
-    lat = latest_summary(args.bucket, args.label, "latency")
+    lat = latest_summary(args.bucket, args.label, "chat-latency")
     if lat:
         s = lat["successes"]
         ttft = s["latency"]["time_to_first_token"]
         itl = s["latency"]["time_per_output_token"]
-        print("LATENCY  (1 req/s, zero contention)")
+        print("CHAT-LATENCY  (ShareGPT, 1 req/s, zero contention)")
         print(f"  TTFT  p50 {ttft['median']*1000:8.1f} ms   p95 {ttft['p95']*1000:8.1f} ms")
         print(f"  ITL   p50 {itl['median']*1000:8.2f} ms   p95 {itl['p95']*1000:8.2f} ms\n")
     else:
-        print("LATENCY  no results found\n")
+        print(f"CHAT-LATENCY  no results at s3://{args.bucket}/benchmarks/{args.label}/chat-latency/\n")
 
-    thr = latest_summary(args.bucket, args.label, "throughput")
+    thr = latest_summary(args.bucket, args.label, "chat-throughput")
     if thr:
-        tps = thr["successes"]["throughput"]["output_tokens_per_sec"]
-        print("THROUGHPUT  (synthetic sweep peak)")
-        print(f"  Output tokens/sec {tps:10.1f}\n")
+        s = thr["successes"]
+        tps = s["throughput"]["output_tokens_per_sec"]
+        ttft = s["latency"]["time_to_first_token"]
+        print("CHAT-THROUGHPUT  (ShareGPT, sustained peak)")
+        print(f"  Output tokens/sec {tps:10.1f}   TTFT p95 {ttft['p95']*1000:8.1f} ms\n")
         print("COST / PERFORMANCE")
         print(
             f"  {tps/args.hourly_usd:10.1f} output tokens per dollar"
             f"  (@ ${args.hourly_usd:.2f}/hr)\n"
         )
     else:
-        print("THROUGHPUT  no results found\n")
-
-    chat = latest_summary(args.bucket, args.label, "chat")
-    if chat:
-        s = chat["successes"]
-        tps = s["throughput"]["output_tokens_per_sec"]
-        ttft = s["latency"]["time_to_first_token"]
-        print("CHAT  (realistic ShareGPT workload, sweep peak)")
-        print(f"  Output tokens/sec {tps:10.1f}   TTFT p95 {ttft['p95']*1000:8.1f} ms")
-        print(f"  {tps/args.hourly_usd:10.1f} output tokens per dollar"
-              f"  (@ ${args.hourly_usd:.2f}/hr)\n")
-    else:
-        print("CHAT  no results found\n")
+        print(f"CHAT-THROUGHPUT  no results at s3://{args.bucket}/benchmarks/{args.label}/chat-throughput/\n")
 
     return 0
 

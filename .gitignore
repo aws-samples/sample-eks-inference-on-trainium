@@ -25,3 +25,6 @@ terraform.rc
 
 # Log files
 *.log
+
+# Local scratch / debug scripts (any dir named debug, at any depth)
+debug/
