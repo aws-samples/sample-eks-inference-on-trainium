@@ -1,0 +1,84 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-weights-${model_name}
+  labels:
+    app: model-weights
+    model: ${model_name}
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: model-weights
+        model: ${model_name}
+    spec:
+      serviceAccountName: model-uploader
+      restartPolicy: Never
+
+      # No accelerator needed - runs on the general-purpose x86 pool.
+      nodeSelector:
+        karpenter.sh/nodepool: x86-cpu-karpenter
+      tolerations:
+        - key: karpenter
+          operator: Exists
+          effect: NoSchedule
+
+      initContainers:
+        # 1. Download the upstream model from HuggingFace (hf_xet backend).
+        # HF_REPO_ID / MODEL_DIR are read via os.environ, since a shell $VAR
+        # wouldn't expand inside the python -c literal.
+        - name: download-upstream
+          image: python:3.11-slim
+          command: ["/bin/bash", "-c"]
+          env:
+            - name: HF_REPO_ID
+              value: ${hf_repo_id}
+            - name: MODEL_DIR
+              value: /tmp/models/${model_name}
+          args:
+            - |
+              set -euo pipefail
+              pip install --no-cache-dir "huggingface_hub[hf_xet]"
+              python -c 'import os; from huggingface_hub import snapshot_download; snapshot_download(repo_id=os.environ["HF_REPO_ID"], local_dir=os.environ["MODEL_DIR"], max_workers=16)'
+              echo "Downloaded upstream model: $(du -sh "$MODEL_DIR" | cut -f1)"
+          volumeMounts:
+            - name: work
+              mountPath: /tmp/models
+
+      # 2. Upload the weights to S3, then write the ready marker the compile Jobs
+      # wait on (written last, so it only exists once the upload is complete).
+      containers:
+        - name: upload
+          image: amazon/aws-cli
+          command: ["/bin/bash", "-c"]
+          env:
+            - name: AWS_REGION
+              value: ${region}
+            - name: MODEL_DIR
+              value: /tmp/models/${model_name}
+            - name: S3_MODEL_URI
+              value: ${s3_model_uri}
+            - name: S3_WEIGHTS_READY_URI
+              value: ${s3_weights_ready_uri}
+          args:
+            - |
+              set -euo pipefail
+              aws configure set s3.preferred_transfer_client crt
+              # Weights only. cache/ (compile cache) and .ready/ (markers) in the
+              # same S3 dir are excluded, so even with --delete they'd be left alone.
+              aws s3 sync "$MODEL_DIR/" "$S3_MODEL_URI/" \
+                --exclude ".cache/*" --exclude "cache/*" --exclude ".ready/*"
+              date -u +%FT%TZ | aws s3 cp - "$S3_WEIGHTS_READY_URI"
+              echo "Uploaded weights to $S3_MODEL_URI"
+          resources:
+            requests:
+              ephemeral-storage: 80Gi
+          volumeMounts:
+            - name: work
+              mountPath: /tmp/models
+      volumes:
+        # ~40 GB of weights; fits the x86 nodes' 200 GiB root volume.
+        - name: work
+          emptyDir:
+            sizeLimit: 80Gi

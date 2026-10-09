@@ -72,6 +72,22 @@ module "data_addons" {
           - key: karpenter
             operator: Exists
             effect: NoSchedule
+      # NFD labels GPU nodes (-> nvidia.com/gpu.present), which gates the device
+      # plugin; its worker isn't covered by daemonsets.tolerations, and the chart
+      # default doesn't tolerate the Karpenter pools' `karpenter` taint.
+      node-feature-discovery:
+        worker:
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Equal
+              value: ""
+              effect: NoSchedule
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+            - key: karpenter
+              operator: Exists
+              effect: NoSchedule
       EOT
     ]
   }

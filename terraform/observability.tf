@@ -125,6 +125,35 @@ resource "kubectl_manifest" "neuron_monitor_servicemonitor" {
   depends_on        = [kubectl_manifest.neuron_monitor_service]
 }
 
+# Cluster-wide convention: any Service labeled `metrics: enabled` with a port
+# named `http` is scraped at /metrics (e.g. the standalone vLLM deployments).
+# Prometheus Operator ignores prometheus.io/* annotations, so workloads opt in
+# with the label instead of needing their own monitor.
+resource "kubectl_manifest" "metrics_enabled_servicemonitor" {
+  server_side_apply = true
+  yaml_body         = <<-YAML
+    apiVersion: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    metadata:
+      name: metrics-enabled
+      namespace: monitoring
+      labels:
+        release: kube-prometheus-stack
+    spec:
+      namespaceSelector:
+        any: true
+      selector:
+        matchLabels:
+          metrics: enabled
+      endpoints:
+        - port: http
+          path: /metrics
+          interval: 15s
+          scheme: http
+  YAML
+  depends_on        = [helm_release.kube_prometheus_stack]
+}
+
 # Ray head + worker PodMonitors so Prometheus scrapes Ray, autoscaler, dashboard,
 # and Ray Serve (incl. vLLM-on-Ray) metrics from the RayService pods in default.
 resource "kubectl_manifest" "ray_head_monitor" {

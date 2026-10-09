@@ -1,0 +1,173 @@
+# Manual path: gpt-oss-20b on one p5.48xlarge (8x H100 80 GB) as 8 vLLM replicas
+# x TP1 (one GPU each) behind one Service - for a 20B model, independent
+# replicas give far more total throughput than one TP8 instance. Same per-replica
+# serve config as vllm-gpt-oss-20b-p5-4xl.yaml, so per-replica numbers compare.
+# Serves the OpenAI-compatible API on :8080.
+#
+# Official checkpoint (openai/gpt-oss-20b), same as Neuron: vLLM on CUDA runs its
+# MoE expert weights in native MXFP4, with --dtype bfloat16 for everything else.
+# (Neuron dequantizes the experts to BF16, so expert numerics differ.)
+#
+# Same serve parameters as the Neuron deployment (max-model-len, max-num-seqs,
+# max-num-batched-tokens, prefix caching) so benchmark results compare like for
+# like; the Neuron-only flags (--hf-overrides / --additional-config, NEURON_*) are
+# dropped. Image vLLM version matches the Neuron DLC (var.vllm_gpu_image).
+#
+# Pulls the model dir from S3 (s3://<bucket>/gpt-oss-20b/ -> /tmp/models/gpt-oss-20b/):
+# weights + the shared cache/ (VLLM_CACHE_ROOT). No offline compile on GPU: vLLM
+# builds its torch.compile cache (cache/torch_compile_cache/) + CUDA graphs at
+# startup (minutes); restarts on the node reuse it.
+#
+# The 8 replicas share the node's NVMe: the init container takes a lock so only
+# the first pulls the model dir; the rest find it in place.
+#
+# Needs a p5.48xlarge Capacity Block (var.p5_48xl_capacity_reservation_id ->
+# gpu-p5-48xl NodePool). Deploy with envsubst:
+#   export VLLM_GPU_IMAGE="$(terraform -chdir=terraform output -raw vllm_gpu_image)"
+#   envsubst '$S3_BUCKET_NAME $AWS_REGION $VLLM_GPU_IMAGE' < vllm/vllm-gpt-oss-20b-p5-48xl.yaml | kubectl apply -f -
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpt20b-p5-48xl-vllm
+  labels:
+    app: gpt20b-p5-48xl-vllm
+    # Scraped by the cluster-wide `metrics-enabled` ServiceMonitor (port `http`,
+    # /metrics) - see terraform/observability.tf.
+    metrics: enabled
+spec:
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    app: gpt20b-p5-48xl-vllm
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt20b-p5-48xl-vllm
+  labels:
+    app: gpt20b-p5-48xl-vllm
+spec:
+  # One replica per H100.
+  replicas: 8
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gpt20b-p5-48xl-vllm
+  template:
+    metadata:
+      labels:
+        app: gpt20b-p5-48xl-vllm
+    spec:
+      serviceAccountName: model-reader
+      nodeSelector:
+        # Pin to the gpu-p5-48xl Karpenter NodePool by name.
+        karpenter.sh/nodepool: gpu-p5-48xl
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+        - effect: NoSchedule
+          key: karpenter
+          operator: Exists
+      initContainers:
+        - name: model-download
+          image: amazon/aws-cli
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              # sync (CRT) reconciles against S3: warm NVMe -> transfers nothing,
+              # fresh node -> full pull, partial -> just the gap. Weights + cache/.
+              aws configure set s3.preferred_transfer_client crt
+              # Replicas share this node's NVMe: hold a lock for the sync so only
+              # one pulls at a time (the image has python3 but no flock).
+              python3 -c 'import fcntl,subprocess,sys; f=open(sys.argv[1],"w"); fcntl.flock(f,fcntl.LOCK_EX); sys.exit(subprocess.call(sys.argv[2:]))' \
+                /tmp/models/.gpt-oss-20b.sync.lock \
+                aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b/" /tmp/models/gpt-oss-20b/
+              mkdir -p /tmp/models/gpt-oss-20b/cache
+              ls -la /tmp/models/gpt-oss-20b/
+          env:
+            - name: AWS_REGION
+              value: ${AWS_REGION}
+          volumeMounts:
+            - name: local-storage
+              mountPath: /tmp/models
+      containers:
+        - name: vllm
+          image: ${VLLM_GPU_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          # Same serve parameters as the Neuron deployment (env below).
+          args:
+            - >
+              vllm serve "$MODEL_ID"
+              --tokenizer "$MODEL_ID"
+              --dtype bfloat16
+              --host 0.0.0.0 --port 8080
+              --tensor-parallel-size "$TENSOR_PARALLEL_SIZE"
+              --max-model-len "$MAX_MODEL_LEN"
+              --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
+              --max-num-seqs "$MAX_NUM_SEQS"
+              --enable-prefix-caching
+              --no-disable-hybrid-kv-cache-manager
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+              name: http
+          # Readiness only (no liveness) - Ready when vLLM's /health responds,
+          # i.e. after the model loads + torch.compile / CUDA graph warmup.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 60
+          resources:
+            # One H100 per replica; 8 x (22 vCPU, 220Gi) fits under the node's
+            # allocatable (192 vCPU / 2 TiB) with headroom for daemonsets.
+            requests:
+              cpu: 22
+              memory: 220Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: 22
+              memory: 220Gi
+              nvidia.com/gpu: 1
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: local-storage
+              mountPath: /tmp/models
+          env:
+            # Serve config (same values as the Neuron deployment, TP1 on 1 GPU).
+            - name: MODEL_ID
+              value: "/tmp/models/gpt-oss-20b"
+            - name: TENSOR_PARALLEL_SIZE
+              value: "1"
+            - name: MAX_NUM_SEQS
+              value: "4"
+            - name: MAX_NUM_BATCHED_TOKENS
+              value: "8192"
+            - name: MAX_MODEL_LEN
+              value: "16384"
+            - name: VLLM_LOGGING_LEVEL
+              value: "INFO"
+            # Compile cache inside the model dir (mirrors s3://<bucket>/gpt-oss-20b/cache/).
+            - name: VLLM_CACHE_ROOT
+              value: "/tmp/models/gpt-oss-20b/cache"
+      terminationGracePeriodSeconds: 10
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        - name: local-storage
+          hostPath:
+            path: /mnt/k8s-disks/0
+            type: Directory

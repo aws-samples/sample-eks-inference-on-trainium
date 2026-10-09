@@ -1,0 +1,6 @@
+apiVersion: v2
+name: serving
+description: Serve a model on a platform-published serving profile (vLLM Deployment or Ray Serve), reusing the profile's precompiled NEFF cache
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

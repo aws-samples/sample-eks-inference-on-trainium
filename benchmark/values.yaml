@@ -26,7 +26,7 @@ benchmark:
   # label      : free-form tag; becomes the S3 path segment so runs never collide
   #              (e.g. vllm, ray, gpu-l40s). Override with --set target.label=...
   # baseUrl    : in-cluster URL of the endpoint under test.
-  #                vLLM  : http://vllm-gpt-oss-20b.default.svc.cluster.local:8080
+  #                vLLM  : http://gpt20b-trn2-3xl-vllm.default.svc.cluster.local:8080 (GPU: gpt20b-p5-4xl-vllm)
   #                Ray   : http://ray-gpt-oss-20b-serve-svc.default.svc.cluster.local:8000
   # modelName  : must match the served model name (vLLM's MODEL_ID). Both the
   #              standalone vLLM and the Ray deploy serve under this path.
@@ -35,7 +35,7 @@ benchmark:
     label: vllm
     serverType: vllm
     modelName: /tmp/models/gpt-oss-20b
-    baseUrl: http://vllm-gpt-oss-20b.default.svc.cluster.local:8080
+    baseUrl: http://gpt20b-trn2-3xl-vllm.default.svc.cluster.local:8080
     tokenizerPath: openai/gpt-oss-20b
     ignoreEos: true
 
@@ -47,6 +47,24 @@ benchmark:
     s3:
       bucketName: ""            # set via --set storage.s3.bucketName=$S3_BUCKET_NAME
       pathPrefix: benchmarks    # -> benchmarks/<label>/<test>/<run-id>/
+
+  # ---- Server-side metrics (Prometheus) ---------------------------------------
+  # inference-perf queries Prometheus for the target's vLLM metrics (TTFT, TPOT,
+  # queue time, KV-cache use, ... as the server measured them) over each run and
+  # writes them to S3 next to the client-side report, so both views cover the
+  # same window. Queries are filtered to model_name=target.modelName plus the
+  # target's Service, so other endpoints serving the same model don't mix in.
+  # Works for the standalone vLLM Services (scraped by the metrics-enabled
+  # ServiceMonitor); Ray Serve exports vLLM metrics differently - set
+  # enabled=false for Ray targets.
+  metrics:
+    prometheus:
+      enabled: true
+      url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+      scrapeInterval: 15        # match the metrics-enabled ServiceMonitor interval
+      service: ""               # Prometheus `service` label; default: target.baseUrl's host
+      extraFilters: []          # more PromQL label matchers, e.g. ["namespace='default'"]
+      perStage: true            # also report server metrics per load stage
 
   # ---- Cost basis for the cost/performance metric ------------------------------
   # Node on-demand $/hr, used at visualize time as: peak output tok/s ÷ $/hr.

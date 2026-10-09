@@ -1,0 +1,190 @@
+# Manual path: gpt-oss-20b on one trn2.48xlarge (16 Trainium2 devices = 64
+# logical NeuronCores at the plugin's default LNC=2) as 16 vLLM replicas x TP4
+# (1 device each) behind one Service - the trn2.3xlarge config replicated across
+# the node, so it reuses the same NEFFs and per-replica numbers compare. BF16.
+# Serves the OpenAI-compatible API on :8080.
+#
+# Pulls the model dir from S3 (s3://<bucket>/gpt-oss-20b/ -> /tmp/models/gpt-oss-20b/):
+# weights (Terraform model-weights-gpt-oss-20b Job) + the shared compile cache in cache/
+# (VLLM_CACHE_ROOT). Graphs already in cache/ - from the platform compile Jobs or
+# an earlier run on this node - are hits; anything else compiles on first start
+# (gpt-oss: 20-40 min) into the node's NVMe. This manifest doesn't upload new
+# NEFFs back to S3, so a new node compiles them again.
+#
+# The 16 replicas share the node's NVMe: the init container takes a lock so only
+# the first pulls the model dir, and the plugin's compile cache locks per graph,
+# so the graphs compile once (or not at all, if cache/ already has the TP4 NEFFs)
+# and the other replicas reuse them.
+#
+# Needs a trn2.48xlarge Capacity Block (var.trn2_48xl_capacity_reservation_id ->
+# neuron-trn2-48xl NodePool). Deploy with envsubst:
+#   envsubst '$S3_BUCKET_NAME $AWS_REGION' < vllm/vllm-gpt-oss-20b-trn2-48xl.yaml | kubectl apply -f -
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpt20b-trn2-48xl-vllm
+  labels:
+    app: gpt20b-trn2-48xl-vllm
+    # Scraped by the cluster-wide `metrics-enabled` ServiceMonitor (port `http`,
+    # /metrics) - see terraform/observability.tf.
+    metrics: enabled
+spec:
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    app: gpt20b-trn2-48xl-vllm
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpt20b-trn2-48xl-vllm
+  labels:
+    app: gpt20b-trn2-48xl-vllm
+spec:
+  # 16 replicas x 1 device = the node's 16 devices.
+  replicas: 16
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gpt20b-trn2-48xl-vllm
+  template:
+    metadata:
+      labels:
+        app: gpt20b-trn2-48xl-vllm
+    spec:
+      serviceAccountName: model-reader
+      nodeSelector:
+        # Pin to the neuron-trn2-48xl Karpenter NodePool by name.
+        karpenter.sh/nodepool: neuron-trn2-48xl
+      tolerations:
+        - effect: NoSchedule
+          key: aws.amazon.com/neuron
+          operator: Exists
+        - effect: NoSchedule
+          key: karpenter
+          operator: Exists
+      initContainers:
+        - name: model-download
+          image: amazon/aws-cli
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              # sync (CRT) reconciles against S3: warm NVMe -> transfers nothing,
+              # fresh node -> full pull, partial -> just the gap. Weights + cache/.
+              aws configure set s3.preferred_transfer_client crt
+              # Replicas share this node's NVMe: hold a lock for the sync so only
+              # one pulls at a time (the image has python3 but no flock).
+              python3 -c 'import fcntl,subprocess,sys; f=open(sys.argv[1],"w"); fcntl.flock(f,fcntl.LOCK_EX); sys.exit(subprocess.call(sys.argv[2:]))' \
+                /tmp/models/.gpt-oss-20b.sync.lock \
+                aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b/" /tmp/models/gpt-oss-20b/
+              mkdir -p /tmp/models/gpt-oss-20b/cache
+              ls -la /tmp/models/gpt-oss-20b/
+          env:
+            - name: AWS_REGION
+              value: ${AWS_REGION}
+          volumeMounts:
+            - name: local-storage
+              mountPath: /tmp/models
+      containers:
+        - name: vllm
+          image: public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          # Build the serve command from the env-var config below (same values as
+          # the Ray manifest, so both reuse the node's NEFF cache).
+          args:
+            - >
+              vllm serve "$MODEL_ID"
+              --tokenizer "$MODEL_ID"
+              --host 0.0.0.0 --port 8080
+              --tensor-parallel-size "$TENSOR_PARALLEL_SIZE"
+              --max-model-len "$MAX_MODEL_LEN"
+              --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
+              --max-num-seqs "$MAX_NUM_SEQS"
+              --enable-prefix-caching
+              --no-disable-hybrid-kv-cache-manager
+              --hf-overrides "$HF_OVERRIDES"
+              --additional-config "$ADDITIONAL_CONFIG"
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+              name: http
+          # Readiness only (no liveness) - the pod becomes Ready when vLLM's
+          # /health responds, i.e. after the model loads + compiles/warms up. No
+          # liveness probe on purpose, so a slow warmup (or a transient hiccup)
+          # never restarts the pod (a first-start compile takes 20-40 min).
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 60
+          resources:
+            # 1 device (4 logical NeuronCores) per replica for TP4, same as the
+            # trn2.3xlarge; 16 x (10 vCPU, 112Gi) fits under the node's
+            # allocatable (192 vCPU / 2 TiB).
+            requests:
+              cpu: 10
+              memory: 112Gi
+              aws.amazon.com/neuron: 1
+            limits:
+              cpu: 10
+              memory: 112Gi
+              aws.amazon.com/neuron: 1
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: local-storage
+              mountPath: /tmp/models
+          env:
+            # Serve config: identical to the trn2.3xlarge deployment (same NEFFs).
+            - name: MODEL_ID
+              value: "/tmp/models/gpt-oss-20b"
+            - name: TENSOR_PARALLEL_SIZE
+              value: "4"
+            - name: MAX_NUM_SEQS
+              value: "4"
+            - name: MAX_NUM_BATCHED_TOKENS
+              value: "8192"
+            - name: MAX_MODEL_LEN
+              value: "16384"
+            # JSON serve flags as env so they stay identical across both manual
+            # paths (a mismatch changes the NEFF cache key).
+            - name: HF_OVERRIDES
+              value: '{"quantization_config": {}}'
+            - name: ADDITIONAL_CONFIG
+              value: '{"neuron_config":{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[4]}}'
+            # trn2 nodes here have no EFA; EFA affinity is a CPU perf hint, not
+            # required for single-instance TP (collectives use NeuronLink).
+            - name: NEURON_SKIP_EFA_AFFINITY
+              value: "1"
+            - name: VLLM_LOGGING_LEVEL
+              value: "INFO"
+            # gpt-oss needs long compile/execute timeouts (first start compiles).
+            - name: VLLM_NEURON_COMPILATION_TIMEOUT
+              value: "1200"
+            - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+              value: "1200"
+            # Compile cache inside the model dir (mirrors s3://<bucket>/gpt-oss-20b/cache/);
+            # shared with the trn2.3xlarge / Ray deployments.
+            - name: VLLM_CACHE_ROOT
+              value: "/tmp/models/gpt-oss-20b/cache"
+            - name: MALLOC_ARENA_MAX
+              value: "1"
+      terminationGracePeriodSeconds: 10
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        - name: local-storage
+          hostPath:
+            path: /mnt/k8s-disks/0
+            type: Directory

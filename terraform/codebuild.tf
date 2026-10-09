@@ -109,10 +109,13 @@ resource "aws_iam_role_policy" "codebuild_policy" {
   })
 }
 
-# Trigger CodeBuild to run during deployment
+# Trigger CodeBuild when the image inputs change: the tag encodes the base image
+# + Ray version, plus the buildspec itself. Force a rebuild with:
+#   terraform -chdir=terraform apply -replace=null_resource.build_image
 resource "null_resource" "build_image" {
   triggers = {
-    always_run = timestamp()
+    image_tag      = local.ray_vllm_image_tag
+    buildspec_hash = filesha1("${path.module}/buildspec-inference-container.yaml")
   }
 
   provisioner "local-exec" {

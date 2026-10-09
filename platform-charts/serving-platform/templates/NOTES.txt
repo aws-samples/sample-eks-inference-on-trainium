@@ -1,0 +1,15 @@
+Serving profiles published in namespace {{ .Release.Namespace }}:
+{{- range $name, $p := .Values.profiles }}
+{{- $r := include "platform.resolve" (dict "root" $ "name" $name "p" $p) | fromJson }}
+  - {{ $name }}  ({{ $p.hardware }}, nodepool {{ $p.nodepool }}, TP{{ $p.tensorParallelSize }}, max-model-len {{ $p.maxModelLen }}){{ if $r.compileJob }}  compile Job: {{ $r.compileJob }}{{ end }}
+{{- end }}
+
+List the catalog:
+  kubectl get cm -n {{ .Release.Namespace }} -l serving.platform/profile \
+    -L serving.platform/model,serving.platform/hardware,serving.platform/nodepool
+
+Compile status (Complete = precompiled NEFFs in S3):
+  kubectl get jobs -n {{ .Release.Namespace }} -l serving.platform/component=compile -L serving.platform/profile
+
+Users deploy a profile with the serving chart:
+  helm install my-model platform-charts/serving -n {{ .Release.Namespace }} --set profile=<name> --set engine=vllm

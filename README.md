@@ -1,9 +1,10 @@
 # demo-neuron-inference-eks
 
-gpt-oss-20b inference on AWS Neuron (Trainium2) served with vLLM + Ray Serve on
-Amazon EKS. Single-instance, tensor-parallel 8, BF16 on one `trn2.48xlarge`.
-Infrastructure is provisioned with Terraform (EKS, Karpenter, S3 model cache,
-observability); the model is served as a `RayService`.
+gpt-oss-20b inference on AWS Neuron (Trainium2) served with vLLM on Amazon EKS.
+Single-instance, tensor-parallel 4, BF16 on one `trn2.3xlarge` (one Trainium2
+device), with optional Ray Serve and an optional GPU (`p5.4xlarge`) deployment for
+comparison. Infrastructure is provisioned with Terraform (EKS, Karpenter, S3 model
+cache, observability); the model is deployed with plain Kubernetes manifests.
 
 > **Important:** the Neuron inference stack is converging on the [vLLM Neuron plugin](https://github.com/vllm-project/vllm-neuron)
 > (currently **Beta**, Trn2/Trn3-only). When adopting this solution, track the
@@ -18,19 +19,29 @@ observability); the model is served as a `RayService`.
 ### Model
 
 - `openai/gpt-oss-20b`
-- `model-compile-s3` Job — downloads the upstream model from HuggingFace, compiles it
-  to Neuron NEFFs by launching the exact `vllm serve` command (the plugin compiles on
-  first launch, before `/health` goes ready), and pushes the weights + NEFF cache
-  (`VLLM_CACHE_ROOT`) to S3.
+- `model-weights-gpt-oss-20b` Job (created by Terraform) — downloads the model from
+  HuggingFace once and uploads it to S3.
+- One model directory, mirrored between S3 and each node's local NVMe:
+
+  | S3 | Node (`/tmp/models` = NVMe) | Used as |
+  |---|---|---|
+  | `s3://<bucket>/<model>/` | `/tmp/models/<model>/` | `MODEL_ID` (weights) |
+  | `s3://<bucket>/<model>/cache/` | `/tmp/models/<model>/cache/` | `VLLM_CACHE_ROOT` (compile cache) |
+  | `s3://<bucket>/benchmarks/` | – | benchmark results |
 
 ### Serving container
 
-- CodeBuild builds the serving image to ECR: **Ray Serve + the standalone vLLM Neuron
-  plugin on the Neuron Deep Learning Container**
-  (`vllm-neuronx` 0.24.0.1.1.0 / py3.13 / SDK 2.32).
-- Init container copies the model + NEFF cache from S3 to node-local NVMe (AWS CLI
-  **CRT** client, accelerated parallel copy), so serving skips recompilation.
-- `model-reader` pod SA (EKS Pod Identity) grants inference pods S3 read; the compile
+- **Neuron:** the vLLM-Neuron Deep Learning Container
+  (`vllm-neuronx` 0.24.0.1.1.0 / py3.13 / SDK 2.32). For Ray Serve, CodeBuild builds
+  a serving image to ECR: **Ray Serve on top of the same DLC**.
+- **GPU:** `vllm/vllm-openai:v0.24.0`, the same vLLM version as the Neuron DLC,
+  with `--dtype bfloat16` (MoE experts stay in the checkpoint's native MXFP4).
+- An init container copies the model directory from S3 to node-local NVMe (AWS CLI
+  **CRT** client, accelerated parallel copy). On the first start on a node, the vLLM
+  Neuron plugin compiles the model graphs (gpt-oss: 20–40 min) into `cache/` on that
+  NVMe; later restarts on the same node reuse it and start in minutes. On GPU, vLLM
+  builds its torch.compile cache and CUDA graphs at startup (minutes).
+- `model-reader` pod SA (EKS Pod Identity) grants inference pods S3 read; the weights
   Job uses a separate `model-uploader` SA (S3 read/write).
 
 ### EKS cluster
@@ -40,11 +51,16 @@ observability); the model is served as a `RayService`.
   controller, CoreDNS, AWS LB Controller, KubeRay operator, and the Prometheus/Grafana
   stack. Everything without a `karpenter` toleration lands here.
 - **Karpenter node pools** (workloads only; tainted `karpenter=true`):
-  - `x86-cpu-karpenter` — **static (1 node)**, hosts the Ray head + CPU apps.
-  - neuron — `trn2` **static (1 node)**, on an ML Capacity Block (reserved), hosts the
-    gpt-oss-20b worker. Also `trn1` and `inf2` pools for other workloads.
-  - gpu — `g6`, `g6e`, `g7`, `g7e`.
-  - `ray-image-warmer` DaemonSet pre-pulls the serving image onto every Karpenter node.
+  - `x86-cpu-karpenter` — **static (1 node)**, hosts the weights Job, the Ray head, and CPU apps.
+  - Capacity Block pools — one **static** pool per block in `capacity_blocks`
+    (reserved capacity, pinned to the block's instance type + AZ), keeping all of the
+    block's instances running: `neuron-trn2` (`trn2.3xlarge`) hosts the gpt-oss-20b
+    deployment; optional `neuron-trn2-48xl` (`trn2.48xlarge`) and `gpu-p5-48xl`
+    (`p5.48xlarge`) host the full-node deployments.
+  - neuron — `trn1` and `inf2` pools for other workloads.
+  - gpu — `gpu-p5` (`p5.4xlarge`, 1× H100) hosts the optional GPU deployment. Also
+    `g6`, `g6e`, `g7`, `g7e`.
+  - `ray-image-warmer` DaemonSet pre-pulls the Ray serving image onto every Karpenter node.
 
 ### Expose inference endpoint
 
@@ -61,24 +77,37 @@ observability); the model is served as a `RayService`.
 
 - Terraform, `kubectl`, `awscli` v2, `helm`, and `envsubst` (from `gettext`)
 - AWS credentials for the target account/region
+- A trn2 ML Capacity Block (this demo is sized for `trn2.3xlarge`)
 
 ## 1. Provision infrastructure (Terraform)
 
 Run everything from the repository root. Terraform commands use `-chdir=terraform`
-so the outputs stay reachable when you deploy Ray in the next step.
+so the outputs stay reachable when you deploy in the next steps.
 
 First, create your config from the example and set the **required** values — your
-AWS region and your trn2 ML Capacity Block (ID + its AZ). These have no working
-defaults; without them the trn2 node can't launch. The rest of the variables ship
-with validated defaults you can keep.
+AWS region and your trn2 ML Capacity Block. These have no working defaults; without
+them the trn2 node can't launch. The rest of the variables ship with validated
+defaults you can keep.
 
 ```bash
-cp terraform/example.tfvars terraform/terraform.tfvars
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 # edit terraform/terraform.tfvars:
-#   region                       = "..."      # where your Capacity Block lives
-#   trn2_capacity_reservation_id = "cr-..."   # aws ec2 describe-capacity-reservations
-#   trn2_capacity_reservation_az = "..."      # the reservation's AZ (must match)
+#   region = "..."   # where your Capacity Block lives
+#   capacity_blocks = {
+#     "neuron-trn2" = {
+#       reservation_id = "cr-..."        # aws ec2 describe-capacity-reservations
+#       az             = "..."           # the reservation's AZ (must match)
+#       instance_type  = "trn2.3xlarge"
+#       node_count     = 1               # instances in the block
+#       hardware       = "neuron"
+#     }
+#   }
 ```
+
+Each `capacity_blocks` entry becomes a static Karpenter NodePool named after its key
+that keeps all `node_count` instances of the block running until the block ends.
+The `vllm/` manifests select pools by name, so keep the keys `neuron-trn2`,
+`neuron-trn2-48xl`, and `gpu-p5-48xl`.
 
 Then init and apply (Terraform auto-loads `terraform.tfvars`):
 
@@ -87,55 +116,57 @@ terraform -chdir=terraform init
 terraform -chdir=terraform apply
 ```
 
-This creates the EKS cluster, Karpenter node pools, the S3 model cache, and the
-add-ons (device plugins, GPU operator/DCGM, KubeRay, monitoring). The apply also:
+This creates the EKS cluster, Karpenter node pools, the S3 model bucket, and the
+add-ons (device plugins, GPU operator/DCGM, KubeRay, monitoring). It also starts the
+`model-weights-gpt-oss-20b` Job, which uploads the model weights to S3.
 
-**Cold-start optimizations.** Two things here cut Ray cluster + model bootstrap from
+**Cold-start optimizations.** Two things here cut model bootstrap from
 **5+ minutes to ~1 minute**:
 
 - **Static Karpenter nodes** — the `neuron-trn2` and `x86-cpu-karpenter` pools run in
-  static mode (`replicas: 1`), so a Neuron worker node and an x86 Ray head node are kept
-  warm and ready.
+  static mode (`replicas: 1`), so a Neuron node and an x86 node are kept warm and
+  ready, and the weights + compile cache stay on the Neuron node's NVMe.
 - **Ray image warmer** — a DaemonSet (`ray-image-warmer`, kube-system) pre-pulls the
   multi-GB Ray + vLLM image onto every Karpenter node, so Ray head/worker pods start
   from a cached image instead of pulling it at launch.
 
-> **Important:** The vLLM config (model, tensor-parallel size, max sequence length, max num
-> seqs, max num batched tokens, and the `--hf-overrides` / `--additional-config` JSON
-> blobs) **must match** between the compile job and the serving containers, or the
-> NEFF cache won't be reused and the model recompiles at serve time (20–40 min). The
-> scalar knobs are env vars across the compile job and both serving paths (vLLM, Ray);
-> the two JSON flags are inlined identically in each manifest.
-
-Point `kubectl` at the new cluster and wait for the compile job:
+Point `kubectl` at the new cluster and wait for the weights upload (~40 GB):
 
 ```bash
-aws eks update-kubeconfig --region us-east-2 --name demo-neuron-eks
-kubectl wait --for=condition=complete job/model-compile-s3 --timeout=80m
+$(terraform -chdir=terraform output -raw configure_kubectl)
+kubectl wait --for=condition=complete job -l app=model-weights --timeout=60m
 ```
 
-Export the values the manifests need (used in the next two steps):
+Export the values the manifests need (used in the next steps):
 
 ```bash
-export AWS_REGION="us-east-2"
+export AWS_REGION="$(terraform -chdir=terraform output -raw region)"
 export S3_BUCKET_NAME="$(terraform -chdir=terraform output -raw model_storage_bucket)"
 export CUSTOM_RAY_VLLM_IMAGE="$(terraform -chdir=terraform output -raw ray_vllm_image_uri)"
+export VLLM_GPU_IMAGE="$(terraform -chdir=terraform output -raw vllm_gpu_image)"
 ```
 
-## 2. Validate inference with standalone vLLM deployment
+## 2. Deploy the model with vLLM
 
 Bring vLLM up by itself first — the quickest way to confirm the model, the S3 pull, and
 Neuron all work, with clean single-container logs and no Ray moving parts.
 
 ```bash
-envsubst '$S3_BUCKET_NAME $AWS_REGION' < vllm/gpt-oss-vllm-deployment.yaml | kubectl apply -f -
+envsubst '$S3_BUCKET_NAME $AWS_REGION' < vllm/vllm-gpt-oss-20b-trn2-3xl.yaml | kubectl apply -f -
 ```
 
-Expose the vLLM endpoint locally (optionally watch startup first with
-`kubectl logs -f deploy/vllm-gpt-oss-20b -c vllm`):
+> **First start compiles.** On a fresh node the vLLM Neuron plugin compiles the model
+> before `/health` goes ready (gpt-oss: 20–40 min). The NEFFs are cached in
+> `/tmp/models/gpt-oss-20b/cache/` on the node's NVMe, so later restarts on the same
+> node skip it. The cache key includes the full vLLM config and the Neuron SDK version:
+> keep the serve settings in the manifest unchanged (and identical to the Ray manifest)
+> to reuse it.
+
+Watch startup, then expose the vLLM endpoint locally:
 
 ```bash
-kubectl port-forward svc/vllm-gpt-oss-20b 8080:8080
+kubectl logs -f deploy/gpt20b-trn2-3xl-vllm -c vllm
+kubectl port-forward svc/gpt20b-trn2-3xl-vllm 8080:8080
 ```
 
 In another shell, hit the OpenAI-compatible endpoint (this path runs vLLM's built-in
@@ -148,13 +179,49 @@ curl -s http://localhost:8080/v1/chat/completions \
   -d '{"model": "/tmp/models/gpt-oss-20b", "messages": [{"role": "user", "content": "Hello"}]}' | jq
 ```
 
-Once inference works, tear it down before deploying Ray (frees the Neuron node):
+Before deploying Ray (§3), tear it down to free the Neuron node — the trn2.3xlarge has
+a single device:
 
 ```bash
-kubectl delete -f vllm/gpt-oss-vllm-deployment.yaml
+kubectl delete -f vllm/vllm-gpt-oss-20b-trn2-3xl.yaml
 ```
 
-## 3. Deploy the model on Ray Serve
+### Optional: GPU deployment for comparison
+
+[`vllm/vllm-gpt-oss-20b-p5-4xl.yaml`](vllm/vllm-gpt-oss-20b-p5-4xl.yaml) serves the same
+model with the same vLLM settings on one `p5.4xlarge` (1× H100, TP1), so benchmark
+results compare like for like. It needs a region that offers `p5.4xlarge`
+(e.g. us-east-1, us-east-2, us-west-2); check with
+`aws ec2 describe-instance-type-offerings --location-type availability-zone --filters Name=instance-type,Values=p5.4xlarge`.
+
+```bash
+envsubst '$S3_BUCKET_NAME $AWS_REGION $VLLM_GPU_IMAGE' < vllm/vllm-gpt-oss-20b-p5-4xl.yaml | kubectl apply -f -
+kubectl port-forward svc/gpt20b-p5-4xl-vllm 8081:8080
+```
+
+### Optional: full-node deployments (trn2.48xlarge, p5.48xlarge)
+
+Each runs one vLLM replica per accelerator behind one Service, using the whole node.
+Both need their own Capacity Block: add a `neuron-trn2-48xl` and/or `gpu-p5-48xl`
+entry to `capacity_blocks` in `terraform.tfvars` (examples are in the file) and
+re-apply, which creates the matching static NodePool.
+
+| Manifest | Node | Layout | Service |
+|---|---|---|---|
+| [`vllm-gpt-oss-20b-trn2-48xl.yaml`](vllm/vllm-gpt-oss-20b-trn2-48xl.yaml) | `trn2.48xlarge` | 16 × TP4 (1 device each) | `gpt20b-trn2-48xl-vllm` |
+| [`vllm-gpt-oss-20b-p5-48xl.yaml`](vllm/vllm-gpt-oss-20b-p5-48xl.yaml) | `p5.48xlarge` | 8 × TP1 (1 H100 each) | `gpt20b-p5-48xl-vllm` |
+
+```bash
+envsubst '$S3_BUCKET_NAME $AWS_REGION' < vllm/vllm-gpt-oss-20b-trn2-48xl.yaml | kubectl apply -f -
+envsubst '$S3_BUCKET_NAME $AWS_REGION $VLLM_GPU_IMAGE' < vllm/vllm-gpt-oss-20b-p5-48xl.yaml | kubectl apply -f -
+```
+
+The replicas share the node's NVMe: the first one pulls the model directory while the
+others wait. On trn2 every replica uses the trn2.3xlarge's TP4 config, so the graphs
+compile once (20–40 min) - or not at all if `cache/` already has them - and are
+reused by the rest.
+
+## 3. Optional: deploy the model on Ray Serve
 
 Create the serving-script ConfigMap, then apply the `RayService`:
 
@@ -164,7 +231,9 @@ envsubst '$CUSTOM_RAY_VLLM_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-
 ```
 
 Karpenter provisions the nodes (head on the x86 pool, worker on the neuron-trn2 pool),
-the worker pulls the model from S3 to local NVMe, and Ray Serve starts the deployment.
+the worker pulls the model directory from S3 to local NVMe, and Ray Serve starts the
+deployment. The Ray manifest uses the same vLLM config and cache directory as §2, so
+if vLLM already compiled on this node, Ray reuses the cache.
 
 Watch progress on the Ray dashboard (port 8265 on the head). The head service
 carries a per-cluster hash suffix, so select it by label instead of guessing the
@@ -180,7 +249,7 @@ Open http://localhost:8265 to visualize the Ray dashboard.
 Expose Ray cluster endpoint locally:
 
 ```bash
-kubectl wait --for=condition=Ready rayservice/ray-gpt-oss-20b --timeout=1200s
+kubectl wait --for=condition=Ready rayservice/ray-gpt-oss-20b --timeout=2700s
 kubectl port-forward svc/ray-gpt-oss-20b-serve-svc 8000:8000
 ```
 In another shell, hit the Ray cluster endpoint with an inference request:
@@ -254,16 +323,17 @@ chat endpoint) and set the time range to the last 15 minutes if a panel looks em
 
 ### Generate traffic load
 
-Expose Ray cluster endpoint locally:
+Expose the endpoint you deployed locally — vLLM (§2) shown; for Ray (§3) use
+`svc/ray-gpt-oss-20b-serve-svc 8000:8000` and port 8000 below:
 
 ```bash
-kubectl port-forward svc/ray-gpt-oss-20b-serve-svc 8000:8000
+kubectl port-forward svc/gpt20b-trn2-3xl-vllm 8080:8080
 ```
 
 Send multiple inference requests
 
 ```bash
-seq 1 100 | xargs -P 4 -I{} curl -s http://localhost:8000/v1/chat/completions \
+seq 1 100 | xargs -P 4 -I{} curl -s http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"/tmp/models/gpt-oss-20b","messages":[{"role":"user","content":"Hello"}]}' -o /dev/null
 ```
@@ -291,35 +361,43 @@ so the benchmark pod needs outbound internet (same as the tokenizer download). T
 benchmark a different corpus (e.g. UltraChat), convert it to the ShareGPT JSON
 schema, mount it, and set the test's `data.path`.
 
-The procedure is **endpoint-agnostic**: because standalone vLLM and Ray Serve
-both expose the same OpenAI-compatible API and serve the same model, the only
-thing that changes between runs is the target URL and a label. Run the section
-once against whatever you deployed; run it again with a different `--set
-benchmark.target.label=` to benchmark another endpoint and compare the two S3
+The procedure is **endpoint-agnostic**: standalone vLLM (Neuron or GPU) and Ray Serve
+all expose the same OpenAI-compatible API and serve the same model, so the only
+thing that changes between runs is the target URL, a label, and the node price.
+Run the section once against whatever you deployed; run it again with a different
+`--set benchmark.target.label=` to benchmark another endpoint and compare the S3
 folders (and Grafana time ranges) yourself.
 
 ### Setup
 
-Point at the endpoint you deployed (§2 vLLM or §3 Ray) and set the node price
-used for the cost/performance number:
+Point at the endpoint you deployed and set the node price used for the
+cost/performance number:
 
 ```bash
 export S3_BUCKET_NAME="$(terraform -chdir=terraform output -raw model_storage_bucket)"
 
 # --- pick ONE target ---
-# Standalone vLLM (§2):
-export TARGET_LABEL=vllm
-export TARGET_URL=http://vllm-gpt-oss-20b.default.svc.cluster.local:8080
-# Ray Serve (§3):
-# export TARGET_LABEL=ray
+# vLLM on trn2.3xlarge (§2):
+export TARGET_LABEL=gpt20b-trn2-3xl-vllm
+export TARGET_URL=http://gpt20b-trn2-3xl-vllm.default.svc.cluster.local:8080
+# vLLM on p5.4xlarge (§2, optional GPU):
+# export TARGET_LABEL=gpt20b-p5-4xl-vllm
+# export TARGET_URL=http://gpt20b-p5-4xl-vllm.default.svc.cluster.local:8080
+# Full-node deployments (§2, optional):
+# export TARGET_LABEL=gpt20b-trn2-48xl-vllm
+# export TARGET_URL=http://gpt20b-trn2-48xl-vllm.default.svc.cluster.local:8080
+# export TARGET_LABEL=gpt20b-p5-48xl-vllm
+# export TARGET_URL=http://gpt20b-p5-48xl-vllm.default.svc.cluster.local:8080
+# Ray Serve on trn2.3xlarge (§3):
+# export TARGET_LABEL=gpt20b-trn2-3xl-ray
 # export TARGET_URL=http://ray-gpt-oss-20b-serve-svc.default.svc.cluster.local:8000
 
-# Node on-demand price for cost/perf (default assumes one trn2.48xlarge).
-export NODE_HOURLY_USD=35.0
+# Node $/hr for cost/perf: your Capacity Block price for trn2.3xlarge, or the
+# on-demand price of the GPU instance. Verify current pricing for your region.
+export NODE_HOURLY_USD=<price>
 ```
 
-Confirm the endpoint is reachable from inside the cluster and inspect the chart
-defaults:
+Confirm the endpoint is reachable from inside the cluster:
 
 ```bash
 kubectl run curl-check --rm -it --restart=Never --image=curlimages/curl -- \
@@ -329,7 +407,7 @@ kubectl run curl-check --rm -it --restart=Never --image=curlimages/curl -- \
 ### Run
 
 One install creates a single Job that runs the tests **sequentially** in one pod
-(latency → throughput → chat), so the latency numbers are measured under zero
+(latency → throughput), so the latency numbers are measured under zero
 competing load before the sweeps saturate the endpoint:
 
 ```bash
@@ -352,12 +430,17 @@ kubectl wait --for=condition=complete job \
 ```
 
 Follow progress with `kubectl logs -n default -l benchmark.target=$TARGET_LABEL -f`.
-Results land in S3 under `benchmarks/<label>/<test>/`.
+Results land in S3 under `benchmarks/<label>/<test>/`: the client-side report
+(`summary_lifecycle_metrics.json`, per-stage files) plus the **server-side** vLLM
+metrics for the same window, which inference-perf queries from Prometheus (filtered
+to the target's Service, so other endpoints don't mix in). For a Ray target, add
+`--set benchmark.metrics.prometheus.enabled=false` (Ray Serve exports vLLM metrics
+differently).
 
 ### Visualize
 
 **Client-side metrics** — [`benchmark/visualize.py`](benchmark/visualize.py) pulls
-the latest latency, throughput, and chat summaries from S3 and prints the answers:
+the latest latency and throughput summaries from S3 and prints the answers:
 
 ```bash
 benchmark/visualize.py \
@@ -373,13 +456,16 @@ that match your target to see *why* the numbers look the way they do:
 - **vLLM** — request queue time, KV-cache utilization, scheduler state
 - **Ray Serve** — replica load and queueing (Ray target only)
 - **Neuron-Monitor** — NeuronCore utilization and HW throughput on the trn2 node
+- **GPU / DCGM** — GPU utilization and memory on the p5 node (GPU target only)
 
-The client-side table tells you *what* the endpoint delivers; the Neuron/vLLM
+The client-side table tells you *what* the endpoint delivers; the hardware/vLLM
 dashboards tell you *why* it saturates where it does.
 
 ### Reference results
 
-Measured on the standalone vLLM endpoint (`label=vllm`).
+Measured on an earlier configuration of this demo — standalone vLLM on one
+`trn2.48xlarge` with tensor-parallel 8 (`label=vllm`). Results for the current
+`trn2.3xlarge` / TP4 configuration will differ.
 
 **Measured configuration**
 
@@ -417,7 +503,10 @@ instances orphan and block VPC/subnet/SG deletion.
 ```bash
 # 1. Delete the serving workloads.
 helm uninstall "$TARGET_LABEL" -n default 2>/dev/null || true
-kubectl delete -f vllm/gpt-oss-vllm-deployment.yaml 2>/dev/null || true
+kubectl delete -f vllm/vllm-gpt-oss-20b-trn2-3xl.yaml 2>/dev/null || true
+kubectl delete -f vllm/vllm-gpt-oss-20b-p5-4xl.yaml 2>/dev/null || true
+kubectl delete -f vllm/vllm-gpt-oss-20b-trn2-48xl.yaml 2>/dev/null || true
+kubectl delete -f vllm/vllm-gpt-oss-20b-p5-48xl.yaml 2>/dev/null || true
 kubectl delete rayservice ray-gpt-oss-20b 2>/dev/null || true
 
 # 2. Delete the Karpenter node pools (+ node classes / claims) so Karpenter
@@ -436,10 +525,6 @@ terraform -chdir=terraform destroy
 ```
 
 > **This is irreversible.** `terraform destroy` deletes the EKS cluster, the
-> Karpenter nodes, the observability stack, and the S3 model-cache bucket
-> (weights + NEFF cache + benchmark results). Back up anything you want to keep
+> Karpenter nodes, the observability stack, and the S3 model bucket
+> (weights + compile cache + benchmark results). Back up anything you want to keep
 > from S3 first. Review the plan before confirming.
-
-
-
-

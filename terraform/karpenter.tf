@@ -109,22 +109,70 @@ resource "helm_release" "karpenter" {
   ]
 }
 
-# Apply every Karpenter NodeClass / NodePool manifest under ./karpenter.
-# Each YAML is rendered with templatefile so var interpolation still works.
+locals {
+  # Capacity Blocks each NodeClass may launch into. Karpenter only uses one when
+  # a NodePool's requirements (instance type, AZ, capacity-type reserved) match.
+  neuron_capacity_reservation_ids = [for k, b in var.capacity_blocks : b.reservation_id if b.hardware == "neuron"]
+  gpu_capacity_reservation_ids    = [for k, b in var.capacity_blocks : b.reservation_id if b.hardware == "gpu"]
+}
+
+# Karpenter manifests, all under ./karpenter:
+#   nodeclasses/*.yaml        EC2NodeClasses (x86, neuron, gpu)
+#   nodepools/*.yaml          on-demand / static NodePools
+#   capacity-blocks/*.tftpl   template for the var.capacity_blocks NodePools
+# Keyed by file name (not path), so moving files between folders doesn't
+# recreate the live objects. Each YAML is rendered with templatefile.
+locals {
+  karpenter_manifests = {
+    for f in fileset("${path.module}/karpenter", "{nodeclasses,nodepools}/*.yaml") : basename(f) => f
+  }
+}
+
 resource "kubectl_manifest" "karpenter" {
-  for_each = fileset("${path.module}/karpenter", "*.yaml")
+  for_each = local.karpenter_manifests
 
   server_side_apply = true
   yaml_body = templatefile("${path.module}/karpenter/${each.value}", {
-    name                         = local.name
-    x86_ami_name                 = var.x86_ami_name
-    neuron_ami_name              = var.neuron_ami_name
-    gpu_ami_name                 = var.gpu_ami_name
-    trn2_capacity_reservation_id = var.trn2_capacity_reservation_id
-    trn2_capacity_reservation_az = var.trn2_capacity_reservation_az
+    name                            = local.name
+    x86_ami_name                    = var.x86_ami_name
+    neuron_ami_name                 = var.neuron_ami_name
+    gpu_ami_name                    = var.gpu_ami_name
+    neuron_capacity_reservation_ids = local.neuron_capacity_reservation_ids
+    gpu_capacity_reservation_ids    = local.gpu_capacity_reservation_ids
   })
 
   depends_on = [
     helm_release.karpenter
   ]
+}
+
+# One static NodePool per Capacity Block (var.capacity_blocks), keeping every
+# instance in the block running.
+resource "kubectl_manifest" "karpenter_capacity_block" {
+  for_each = var.capacity_blocks
+
+  server_side_apply = true
+  yaml_body = templatefile("${path.module}/karpenter/capacity-blocks/nodepool.yaml.tftpl", {
+    pool_name       = each.key
+    reservation_id  = each.value.reservation_id
+    az              = each.value.az
+    instance_type   = each.value.instance_type
+    instance_family = split(".", each.value.instance_type)[0]
+    node_count      = each.value.node_count
+    hardware        = each.value.hardware
+    node_class      = each.value.hardware
+    expire_after    = each.value.expire_after
+  })
+
+  # NodeClasses first (they carry the reservation selector terms).
+  depends_on = [
+    kubectl_manifest.karpenter
+  ]
+}
+
+# The trn2.3xlarge pool used to be a static file under ./karpenter; keep the live
+# NodePool (and its node) instead of deleting and recreating it.
+moved {
+  from = kubectl_manifest.karpenter["neuron-trn2-nodepool.yaml"]
+  to   = kubectl_manifest.karpenter_capacity_block["neuron-trn2"]
 }

@@ -1,11 +1,11 @@
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
-  name: gpu
+  name: neuron
 spec:
   amiFamily: AL2023
   amiSelectorTerms:
-    - name: ${gpu_ami_name}
+    - name: ${neuron_ami_name}
   instanceStorePolicy: RAID0
   blockDeviceMappings:
     - deviceName: /dev/xvda
@@ -14,7 +14,6 @@ spec:
         encrypted: true
         volumeSize: 500Gi
         volumeType: gp3
-  detailedMonitoring: true
   role: "${name}-karpenter-node"
   securityGroupSelectorTerms:
     - tags:
@@ -25,6 +24,16 @@ spec:
     - tags:
         karpenter.sh/discovery: "${name}"
         kubernetes.io/role/internal-elb: "1"
+  # Neuron Capacity Blocks from var.capacity_blocks. Karpenter only launches into
+  # a reservation when a NodePool's requirements (instance type, AZ, capacity-type
+  # reserved) match it, so this is safe to share with the trn1/inf2 pools - only
+  # the generated Capacity Block pools use it.
+%{ if length(neuron_capacity_reservation_ids) > 0 ~}
+  capacityReservationSelectorTerms:
+%{ for id in neuron_capacity_reservation_ids ~}
+    - id: ${id}
+%{ endfor ~}
+%{ endif ~}
   tags:
     karpenter.sh/discovery: "${name}"
-    nvidia-gpu: "true"
+    aws-neuron: "true"

@@ -1,0 +1,34 @@
+{{- /*
+One ConfigMap per profile - the catalog entry users discover and deploy from.
+  data         env vars (envFrom-able): serve flags, S3 paths, cache dir
+  annotations  serving.platform/spec (placement + image JSON, read by the
+               serving chart), config hash, compile Job name
+*/ -}}
+{{- range $name, $p := .Values.profiles }}
+{{- $r := include "platform.resolve" (dict "root" $ "name" $name "p" $p) | fromJson }}
+{{- $cmName := printf "vllm-profile-%s" $name }}
+{{- $existing := lookup "v1" "ConfigMap" $.Release.Namespace $cmName }}
+{{- if and $existing (not $.Values.allowProfileMutation) }}
+{{- $oldHash := index ($existing.metadata.annotations | default dict) "serving.platform/config-hash" | default "" }}
+{{- if and $oldHash (ne $oldHash $r.configHash) }}
+{{- fail (printf "profile %q changed, but profiles are immutable (deployments were compiled for the old config). Add it under a new name, or set allowProfileMutation=true." $name) }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $cmName }}
+  labels:
+    {{- include "platform.labels" $ | nindent 4 }}
+    serving.platform/profile: {{ $name }}
+    serving.platform/model: {{ $.Values.model.name }}
+    serving.platform/hardware: {{ $p.hardware }}
+    serving.platform/nodepool: {{ $p.nodepool }}
+  annotations:
+    serving.platform/config-hash: {{ $r.configHash | quote }}
+    serving.platform/compile-job: {{ $r.compileJob | quote }}
+    serving.platform/spec: {{ $r.spec | toJson | quote }}
+data:
+  {{- toYaml $r.env | nindent 2 }}
+{{- end }}

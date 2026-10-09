@@ -1,0 +1,142 @@
+{{- /*
+One compile Job per profile whose hardware has a compile step (Neuron). The name
+carries a hash of the profile env + image, so unchanged profiles keep their
+completed Job across upgrades and only new/changed ones compile. Jobs for the
+same NodePool queue for the node. No activeDeadlineSeconds: it counts from Job
+creation (including queueing); the script bounds its own wait instead.
+*/ -}}
+{{- if .Values.compile.enabled }}
+{{- range $name, $p := .Values.profiles }}
+{{- $r := include "platform.resolve" (dict "root" $ "name" $name "p" $p) | fromJson }}
+{{- if $r.compileJob }}
+{{- $res := $p.resources | default dict }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $r.compileJob }}
+  labels:
+    {{- include "platform.labels" $ | nindent 4 }}
+    serving.platform/profile: {{ $name }}
+    serving.platform/component: compile
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        serving.platform/profile: {{ $name }}
+        serving.platform/component: compile
+    spec:
+      serviceAccountName: {{ $.Values.serviceAccounts.uploader }}
+      restartPolicy: Never
+
+      # Compile runs on the profile's NodePool by launching the vended serve
+      # script, so the NEFFs the plugin writes to VLLM_CACHE_ROOT match the
+      # config the serving pods look up (a mismatch would force a recompile).
+      nodeSelector:
+        karpenter.sh/nodepool: {{ $p.nodepool }}
+      tolerations:
+        {{- toYaml $r.hw.tolerations | nindent 8 }}
+
+      initContainers:
+        # 1. Wait for the Terraform model-weights-<model> Job's ready marker, then
+        # pull the model dir (weights + shared cache/) to NVMe. sync (CRT) is
+        # incremental: a warm node transfers nothing.
+        - name: download-weights
+          image: {{ $.Values.images.awsCli }}
+          command: ["/bin/bash", "-c"]
+          envFrom:
+            - configMapRef:
+                name: vllm-profile-{{ $name }}
+          args:
+            - |
+              set -euo pipefail
+              until aws s3 ls "$S3_WEIGHTS_READY_URI" >/dev/null 2>&1; do
+                echo "Waiting for $S3_WEIGHTS_READY_URI (model-weights-<model> Job)..."; sleep 30
+              done
+              aws configure set s3.preferred_transfer_client crt
+              aws s3 sync "$S3_MODEL_URI/" "$MODEL_ID/"
+              mkdir -p "$VLLM_CACHE_ROOT"
+          volumeMounts:
+            - name: work
+              mountPath: {{ $.Values.paths.models }}
+
+      # 2. Compile + upload in ONE main container that owns the devices.
+      containers:
+        - name: compile-and-upload
+          image: {{ $r.image }}
+          envFrom:
+            - configMapRef:
+                name: vllm-profile-{{ $name }}
+          # Same shape as the serving pod (profile resources), so it fits the
+          # same node.
+          resources:
+            requests:
+              {{- with $res.cpu }}
+              cpu: {{ . | quote }}
+              {{- end }}
+              {{- with $res.memory }}
+              memory: {{ . }}
+              {{- end }}
+              {{ $r.hw.deviceResource }}: {{ $p.devices | quote }}
+            limits:
+              {{- with $res.cpu }}
+              cpu: {{ . | quote }}
+              {{- end }}
+              {{- with $res.memory }}
+              memory: {{ . }}
+              {{- end }}
+              {{ $r.hw.deviceResource }}: {{ $p.devices | quote }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # Compile by launching the vended serve script; the plugin compiles
+              # the graphs before /health goes ready, writing NEFFs to
+              # VLLM_CACHE_ROOT.
+              bash /opt/vllm/serve.sh &
+              VLLM_PID=$!
+
+              # Wait for compile to finish (health = ready).
+              ready=0
+              for i in $(seq 1 {{ div $.Values.compile.timeoutSeconds 10 }}); do
+                if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+                  echo "vllm serve exited during compile" >&2; break
+                fi
+                if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+                  echo "Compile complete, server ready after $((i*10))s"; ready=1; break
+                fi
+                sleep 10
+              done
+              kill "$VLLM_PID" 2>/dev/null || true
+              wait "$VLLM_PID" 2>/dev/null || true
+              if [ "$ready" -ne 1 ]; then echo "Server never became ready" >&2; exit 1; fi
+
+              # Upload the cache dir to S3 (AWS CLI v2 + CRT) - only new entries
+              # transfer - then this profile's ready marker.
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends curl unzip ca-certificates
+              curl --retry 5 --retry-all-errors --retry-delay 3 -fSL -o /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+              unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install --update && rm -rf /tmp/awscliv2.zip /tmp/aws
+              aws configure set s3.preferred_transfer_client crt
+              aws s3 sync "$VLLM_CACHE_ROOT/" "$S3_CACHE_URI/"
+              date -u +%FT%TZ | aws s3 cp - "$S3_CACHE_READY_URI"
+              echo "Uploaded cache to $S3_CACHE_URI"
+          volumeMounts:
+            - name: work
+              mountPath: {{ $.Values.paths.models }}
+            - name: serve-script
+              mountPath: /opt/vllm
+      volumes:
+        # NVMe instance store (same path serving uses), so the compile writes
+        # to fast local disk and a warm node can be reused by a serving pod.
+        - name: work
+          hostPath:
+            path: {{ $.Values.paths.nodeLocal }}
+            type: Directory
+        - name: serve-script
+          configMap:
+            name: vllm-serve-script
+{{- end }}
+{{- end }}
+{{- end }}

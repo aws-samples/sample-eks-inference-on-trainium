@@ -1,0 +1,58 @@
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: ${pool_name}
+spec:
+  # Generated from var.capacity_blocks["${pool_name}"]: a static pool that keeps
+  # all ${node_count} instance(s) of Capacity Block ${reservation_id}
+  # (${instance_type}, ${az}) running. Static nodes are not consolidated.
+  replicas: ${node_count}
+  template:
+    metadata:
+      labels:
+        instanceType: ${instance_family}
+        provisionerType: Karpenter
+%{ if hardware == "neuron" ~}
+        neuron.amazonaws.com/neuron-device: "true"
+%{ else ~}
+        nvidia.com/gpu: "true"
+%{ endif ~}
+    spec:
+      taints:
+%{ if hardware == "neuron" ~}
+        - key: aws.amazon.com/neuron
+%{ else ~}
+        - key: nvidia.com/gpu
+%{ endif ~}
+          value: "true"
+          effect: "NoSchedule"
+        - key: karpenter
+          value: "true"
+          effect: "NoSchedule"
+      requirements:
+        # Exactly the block's instance type, in the block's AZ, on reserved
+        # capacity only (the reservation is declared on the ${node_class} NodeClass).
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["${instance_type}"]
+        - key: "kubernetes.io/arch"
+          operator: In
+          values: ["amd64"]
+        - key: "topology.kubernetes.io/zone"
+          operator: In
+          values: ["${az}"]
+        - key: "karpenter.sh/capacity-type"
+          operator: In
+          values: ["reserved"]
+      # Capacity Blocks end at their EndDate (EC2 reclaims the instances); don't
+      # expire nodes before that - an expired node wipes its NVMe model cache.
+      expireAfter: ${expire_after}
+      terminationGracePeriod: 24h
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: ${node_class}
+  # Static mode allows only the `nodes` limit: the block's instance count (no
+  # spare capacity exists in the block for a surge replacement).
+  limits:
+    nodes: ${node_count}

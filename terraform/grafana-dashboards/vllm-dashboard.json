@@ -105,7 +105,7 @@
               "uid": "prometheus"
             },
             "editorMode": "builder",
-            "expr": "vllm:iteration_tokens_total_count{model_name=\"/tmp/models/mistral-7b-v0.3\"}",
+            "expr": "vllm:iteration_tokens_total_count{service=~\"$service\"}",
             "instant": true,
             "key": "Q-3cb840b2-c56c-4aa6-8601-2dcbe388689c-0",
             "range": true,
@@ -198,7 +198,7 @@
               "uid": "prometheus"
             },
             "editorMode": "builder",
-            "expr": "vllm:generation_tokens_total{model_name=\"/tmp/models/mistral-7b-v0.3\"}",
+            "expr": "vllm:generation_tokens_total{service=~\"$service\"}",
             "instant": true,
             "key": "Q-3cb840b2-c56c-4aa6-8601-2dcbe388689c-0",
             "range": true,
@@ -291,7 +291,7 @@
               "uid": "prometheus"
             },
             "editorMode": "builder",
-            "expr": "vllm:time_per_output_token_seconds_count{model_name=\"/tmp/models/mistral-7b-v0.3\"}",
+            "expr": "vllm:time_per_output_token_seconds_count{service=~\"$service\"}",
             "instant": true,
             "key": "Q-4f2fc92a-5504-44f5-98c2-707f8123b677-0",
             "range": true,
@@ -384,7 +384,7 @@
               "uid": "prometheus"
             },
             "editorMode": "builder",
-            "expr": "vllm:time_to_first_token_seconds_count{model_name=\"/tmp/models/mistral-7b-v0.3\"}",
+            "expr": "vllm:time_to_first_token_seconds_count{service=~\"$service\"}",
             "instant": true,
             "key": "Q-dd29cc9f-071b-431c-b553-ab105767f999-0",
             "range": true,
@@ -477,7 +477,7 @@
               "uid": "prometheus"
             },
             "editorMode": "builder",
-            "expr": "vllm:time_in_queue_requests_count{model_name=\"/tmp/models/mistral-7b-v0.3\"}",
+            "expr": "vllm:time_in_queue_requests_count{service=~\"$service\"}",
             "instant": true,
             "key": "Q-224533a6-f54a-4132-8775-fd3f80213111-0",
             "range": true,
@@ -571,7 +571,7 @@
             },
             "editorMode": "builder",
             "exemplar": false,
-            "expr": "vllm:request_prompt_tokens_count{model_name=\"/tmp/models/mistral-7b-v0.3\"}",
+            "expr": "vllm:request_prompt_tokens_count{service=~\"$service\"}",
             "format": "time_series",
             "instant": true,
             "key": "Q-d8709b18-5dc9-41ae-9627-ec1b203ed083-0",
@@ -666,7 +666,7 @@
               "uid": "prometheus"
             },
             "editorMode": "builder",
-            "expr": "vllm:request_inference_time_seconds_count{model_name=\"/tmp/models/mistral-7b-v0.3\"}",
+            "expr": "vllm:request_inference_time_seconds_count{service=~\"$service\"}",
             "instant": true,
             "key": "Q-b50f2ef3-bafd-4648-bc1c-e6bac4bb008b-0",
             "range": true,
@@ -759,7 +759,7 @@
               "uid": "prometheus"
             },
             "editorMode": "builder",
-            "expr": "vllm:num_preemptions_total{model_name=\"/tmp/models/mistral-7b-v0.3\"}",
+            "expr": "vllm:num_preemptions_total{service=~\"$service\"}",
             "instant": true,
             "key": "Q-4f2fc92a-5504-44f5-98c2-707f8123b677-0",
             "range": true,
@@ -775,7 +775,31 @@
     "style": "dark",
     "tags": [],
     "templating": {
-      "list": []
+      "list": [
+        {
+          "name": "service",
+          "label": "vLLM service",
+          "type": "query",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "definition": "label_values(vllm:num_requests_running, service)",
+          "query": {
+            "query": "label_values(vllm:num_requests_running, service)",
+            "refId": "service"
+          },
+          "refresh": 2,
+          "multi": true,
+          "includeAll": true,
+          "current": {
+            "selected": true,
+            "text": ["All"],
+            "value": ["$__all"]
+          },
+          "sort": 1
+        }
+      ]
     },
     "time": {
       "from": "now-30m",

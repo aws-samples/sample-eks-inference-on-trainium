@@ -82,6 +82,29 @@ server:
 tokenizer:
   pretrained_model_name_or_path: {{ $b.target.tokenizerPath }}
 
+{{- with $b.metrics.prometheus }}
+{{- if .enabled }}
+{{- $svc := .service | default (first (splitList "." (first (splitList ":" (urlParse $b.target.baseUrl).host)))) }}
+
+# Server-side vLLM metrics for this target, queried from Prometheus.
+metrics:
+  type: prometheus
+  prometheus:
+    url: {{ .url }}
+    scrape_interval: {{ .scrapeInterval }}
+    filters:
+      - "service='{{ $svc }}'"
+      {{- range .extraFilters }}
+      - {{ . | quote }}
+      {{- end }}
+
+report:
+  prometheus:
+    summary: true
+    per_stage: {{ .perStage }}
+{{- end }}
+{{- end }}
+
 storage:
   simple_storage_service:
     bucket_name: {{ $b.storage.s3.bucketName | quote }}

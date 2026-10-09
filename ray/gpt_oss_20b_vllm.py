@@ -1,6 +1,6 @@
 """Ray Serve app for gpt-oss-20b on Neuron via the standalone vLLM Neuron plugin.
 
-Single-instance, TP8, BF16 on one trn2.48xlarge.
+Single-instance, TP4, BF16 on one trn2.3xlarge (1 device = 4 logical NeuronCores).
 
 We do NOT hand-roll the OpenAI response format. Instead the deployment builds
 vLLM's own serving objects (OpenAIServingChat / OpenAIServingCompletion /
@@ -15,8 +15,8 @@ the HEAD (x86, no accelerator) to build the deployment graph. vLLM's
 which fails on the head. So all device-touching work (arg parsing, engine build,
 init_app_state) happens in ``__init__``, which runs on the trn2 worker. The FastAPI
 app at import is empty; routes are plain methods referencing serving objects built
-in ``__init__``. Config comes from env vars, matching the compile job so the
-precompiled NEFF cache pulled from S3 is reused (no recompile).
+in ``__init__``. Config comes from env vars, matching the standalone vLLM manifest
+so both reuse the NEFF cache compiled on the node's NVMe.
 """
 import os
 import logging
@@ -39,14 +39,14 @@ from vllm.v1.engine.async_llm import AsyncLLM
 logger = logging.getLogger("ray.serve")
 
 MODEL = os.environ.get("MODEL_ID", "/tmp/models/gpt-oss-20b")
-neuron_cores = int(os.getenv("NEURON_CORES", "8"))
+neuron_cores = int(os.getenv("NEURON_CORES", "4"))
 
 # Empty at import (runs on the head too) - no device-touching calls here.
 app = FastAPI()
 
 
 def build_serve_args():
-    """Parse the same serve flags the compile Job / standalone deploy use, through
+    """Parse the same serve flags the standalone vLLM deploy uses, through
     vLLM's own CLI parser, so the engine config (and NEFF cache key) match exactly.
     Called only from __init__ (on the worker); make_arg_parser touches DeviceConfig.
     """
@@ -54,7 +54,7 @@ def build_serve_args():
     argv = [
         "--model", MODEL,
         "--served-model-name", MODEL,
-        "--tensor-parallel-size", os.environ.get("TENSOR_PARALLEL_SIZE", "8"),
+        "--tensor-parallel-size", os.environ.get("TENSOR_PARALLEL_SIZE", "4"),
         "--max-model-len", os.environ.get("MAX_MODEL_LEN", "16384"),
         "--max-num-batched-tokens", os.environ.get("MAX_NUM_BATCHED_TOKENS", "8192"),
         "--max-num-seqs", os.environ.get("MAX_NUM_SEQS", "4"),
