@@ -1,0 +1,24 @@
+# Cluster-wide convention: any Service labeled `metrics: enabled` with a port
+# named `http` is scraped at /metrics every 1s (e.g. the standalone vLLM
+# deployments) - fine-grained enough to see batching / queueing during benchmarks.
+# Prometheus Operator ignores prometheus.io/* annotations, so workloads opt in
+# with the label instead of needing their own monitor.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: metrics-enabled
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    any: true
+  selector:
+    matchLabels:
+      metrics: enabled
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 1s
+      scrapeTimeout: 1s
+      scheme: http

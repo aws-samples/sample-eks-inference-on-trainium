@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: neuron-monitor
+  namespace: monitoring
+  labels:
+    app: neuron-monitor
+spec:
+  selector:
+    matchLabels:
+      app: neuron-monitor
+  template:
+    metadata:
+      labels:
+        app: neuron-monitor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9010"
+    spec:
+      # hostPID: neuron-monitor reads /proc/<pid>/stat of the Neuron runtime
+      #   processes (vLLM) for the neuron_runtime_* vcpu/memory metrics.
+      # hostNetwork: reach IMDS so instance_id/type/az/region labels populate
+      #   (the Neuron Grafana dashboard groups by them).
+      hostPID: true
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: app
+          image: public.ecr.aws/neuron/neuron-monitor:1.3.0
+          command: ["/bin/sh", "-c"]
+          # The image's default metric set (neuron-monitor.conf) with a 1s
+          # update period (default 5s), matching the 1s scrape below. The
+          # period must be a duration string ("1s"), not a number.
+          args:
+            - |
+              sed 's/^{/{\n  "period": "1s",/' /opt/aws/neuron/bin/neuron-monitor.conf > /tmp/monitor.conf
+              neuron-monitor -c /tmp/monitor.conf | neuron-monitor-prometheus.py --port 9010
+          ports:
+            - name: metrics
+              containerPort: 9010
+              hostPort: 9010
+          resources:
+            limits: { cpu: 500m, memory: 200Mi }
+            requests: { cpu: 100m, memory: 100Mi }
+          volumeMounts:
+            - name: dev
+              mountPath: /dev
+          securityContext:
+            privileged: true
+      tolerations:
+        - key: aws.amazon.com/neuron
+          operator: Exists
+          effect: NoSchedule
+        - key: karpenter
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        neuron.amazonaws.com/neuron-device: "true"
+      volumes:
+        - name: dev
+          hostPath:
+            path: /dev
+      restartPolicy: Always

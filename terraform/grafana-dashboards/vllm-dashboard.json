@@ -25,7 +25,7 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "prometheus-1s"
         },
         "fieldConfig": {
           "defaults": {
@@ -102,7 +102,7 @@
           {
             "datasource": {
               "type": "prometheus",
-              "uid": "prometheus"
+              "uid": "prometheus-1s"
             },
             "editorMode": "builder",
             "expr": "vllm:iteration_tokens_total_count{service=~\"$service\"}",
@@ -118,7 +118,7 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "prometheus-1s"
         },
         "fieldConfig": {
           "defaults": {
@@ -195,7 +195,7 @@
           {
             "datasource": {
               "type": "prometheus",
-              "uid": "prometheus"
+              "uid": "prometheus-1s"
             },
             "editorMode": "builder",
             "expr": "vllm:generation_tokens_total{service=~\"$service\"}",
@@ -211,7 +211,7 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "prometheus-1s"
         },
         "fieldConfig": {
           "defaults": {
@@ -288,7 +288,7 @@
           {
             "datasource": {
               "type": "prometheus",
-              "uid": "prometheus"
+              "uid": "prometheus-1s"
             },
             "editorMode": "builder",
             "expr": "vllm:time_per_output_token_seconds_count{service=~\"$service\"}",
@@ -304,7 +304,7 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "prometheus-1s"
         },
         "fieldConfig": {
           "defaults": {
@@ -381,7 +381,7 @@
           {
             "datasource": {
               "type": "prometheus",
-              "uid": "prometheus"
+              "uid": "prometheus-1s"
             },
             "editorMode": "builder",
             "expr": "vllm:time_to_first_token_seconds_count{service=~\"$service\"}",
@@ -397,7 +397,7 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "prometheus-1s"
         },
         "fieldConfig": {
           "defaults": {
@@ -474,7 +474,7 @@
           {
             "datasource": {
               "type": "prometheus",
-              "uid": "prometheus"
+              "uid": "prometheus-1s"
             },
             "editorMode": "builder",
             "expr": "vllm:time_in_queue_requests_count{service=~\"$service\"}",
@@ -490,7 +490,7 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "prometheus-1s"
         },
         "fieldConfig": {
           "defaults": {
@@ -567,7 +567,7 @@
           {
             "datasource": {
               "type": "prometheus",
-              "uid": "prometheus"
+              "uid": "prometheus-1s"
             },
             "editorMode": "builder",
             "exemplar": false,
@@ -586,7 +586,7 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "prometheus-1s"
         },
         "fieldConfig": {
           "defaults": {
@@ -663,7 +663,7 @@
           {
             "datasource": {
               "type": "prometheus",
-              "uid": "prometheus"
+              "uid": "prometheus-1s"
             },
             "editorMode": "builder",
             "expr": "vllm:request_inference_time_seconds_count{service=~\"$service\"}",
@@ -679,7 +679,7 @@
       {
         "datasource": {
           "type": "prometheus",
-          "uid": "prometheus"
+          "uid": "prometheus-1s"
         },
         "fieldConfig": {
           "defaults": {
@@ -756,7 +756,7 @@
           {
             "datasource": {
               "type": "prometheus",
-              "uid": "prometheus"
+              "uid": "prometheus-1s"
             },
             "editorMode": "builder",
             "expr": "vllm:num_preemptions_total{service=~\"$service\"}",
@@ -782,7 +782,7 @@
           "type": "query",
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "prometheus-1s"
           },
           "definition": "label_values(vllm:num_requests_running, service)",
           "query": {

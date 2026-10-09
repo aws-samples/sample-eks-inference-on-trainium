@@ -20,7 +20,7 @@
     "links": [],
     "panels": [
       {
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {
@@ -172,7 +172,7 @@
         "type": "table"
       },
       {
-        "datasource": null,
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -225,7 +225,7 @@
         "type": "stat"
       },
       {
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -280,7 +280,7 @@
         "type": "stat"
       },
       {
-        "datasource": null,
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -345,7 +345,7 @@
         "type": "gauge"
       },
       {
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -410,7 +410,7 @@
         "type": "gauge"
       },
       {
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -465,7 +465,7 @@
         "type": "stat"
       },
       {
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {
@@ -534,7 +534,7 @@
         "type": "gauge"
       },
       {
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "description": "",
         "fieldConfig": {
           "defaults": {
@@ -592,7 +592,7 @@
         "type": "stat"
       },
       {
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "description": "",
         "fieldConfig": {
           "defaults": {
@@ -659,7 +659,7 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": null,
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {}
@@ -777,7 +777,7 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": null,
+        "datasource": "Prometheus (1s)",
         "description": "",
         "fieldConfig": {
           "defaults": {
@@ -890,7 +890,7 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": null,
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -991,7 +991,7 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -1108,7 +1108,7 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": null,
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -1210,7 +1210,7 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": null,
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -1326,7 +1326,7 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -1427,7 +1427,7 @@
         "bars": false,
         "dashLength": 10,
         "dashes": false,
-        "datasource": "Prometheus",
+        "datasource": "Prometheus (1s)",
         "fieldConfig": {
           "defaults": {
             "custom": {},
@@ -1571,7 +1571,7 @@
     "templating": {
       "list": [
         {
-          "datasource": "Prometheus",
+          "datasource": "Prometheus (1s)",
           "filters": [],
           "hide": 0,
           "label": "",

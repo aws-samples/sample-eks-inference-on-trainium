@@ -40,7 +40,7 @@ variable "capacity_blocks" {
     Each becomes a static Karpenter NodePool that keeps all `node_count` instances
     of the block running (reserved capacity only, pinned to the block's instance
     type and AZ), and its reservation is added to the hardware's NodeClass. The
-    vllm/ manifests select pools by name: neuron-trn2 (trn2.3xlarge),
+    vllm/ manifests select pools by name: neuron-trn2-3xl (trn2.3xlarge),
     neuron-trn2-48xl (trn2.48xlarge), gpu-p5-48xl (p5.48xlarge).
   EOT
   type = map(object({
@@ -76,21 +76,10 @@ variable "ray_version" {
 }
 
 variable "models" {
-  description = "Models to stage in S3: model dir name -> HuggingFace repo. Each gets a model-weights-<name> Job that uploads it to s3://<bucket>/<name>/ (mirrored on nodes at /tmp/models/<name>/)."
+  description = "Models to stage, keyed by model name -> HuggingFace checkpoint. The name is the model's folder everywhere: s3://<bucket>/<name>/ (weights + cache/), /tmp/models/<name>/ on nodes (MODEL_ID), and the API model id /tmp/models/<name>. Each gets a model-weights-<name> Job."
   type        = map(string)
   default = {
     "gpt-oss-20b" = "openai/gpt-oss-20b"
-  }
-}
-
-variable "model_name" {
-  description = "Model (a key of var.models) the serving platform builds profiles for."
-  type        = string
-  default     = "gpt-oss-20b"
-
-  validation {
-    condition     = contains(keys(var.models), var.model_name)
-    error_message = "model_name must be a key of var.models."
   }
 }
 
@@ -102,16 +91,19 @@ variable "vllm_gpu_image" {
 
 variable "serving_profiles" {
   description = <<-EOT
-    Serving profiles the cluster supports - the catalog users deploy from with the
-    platform-charts/serving chart. Each becomes a vllm-profile-<name> ConfigMap; each
-    `hardware = "neuron"` profile also gets a compile Job that precompiles its NEFFs
-    to S3. Profiles are immutable: change the config under a new name (e.g.
-    trn2-tp8-16k-v2), or set serving_profiles_allow_mutation. Names: lowercase
-    letters, digits and '-', max 40 chars.
+    Validated serving configs ("profiles") the platform publishes for users. Each
+    becomes a vllm-profile-<name> ConfigMap (serve flags, S3 paths, image) users can
+    read and copy; each `hardware = "neuron"` profile also gets a compile Job that
+    precompiles its NEFFs into the model's shared s3://<bucket>/<model>/cache/, so
+    any deployment using that exact config + image starts without compiling.
+    Empty by default. Profiles are immutable: change a config under a new name
+    (e.g. trn2-tp4-16k-v2), or set serving_profiles_allow_mutation. Names:
+    lowercase letters, digits and '-', max 40 chars.
   EOT
   type = map(object({
+    model                  = string           # key of var.models
     hardware               = string           # neuron | gpu
-    nodepool               = string           # Karpenter NodePool for compile + serving
+    nodepool               = string           # NodePool for compile + serving (a capacity_blocks key or an on-demand pool)
     devices                = number           # accelerator devices per pod
     cpu                    = optional(string) # serving + compile pod requests/limits
     memory                 = optional(string)
@@ -123,24 +115,7 @@ variable "serving_profiles" {
     additional_config      = optional(string, "") # --additional-config JSON
     env                    = optional(map(string), {})
   }))
-  default = {
-    # Single trn2.3xlarge (1 Trainium2 device = 4 logical NeuronCores at the
-    # plugin's default LNC=2, 12 vCPU, 128 GiB) -> TP4 max. cpu/memory leave
-    # headroom below the node's allocatable for system daemonsets.
-    "trn2-tp4-16k" = {
-      hardware               = "neuron"
-      nodepool               = "neuron-trn2"
-      devices                = 1
-      cpu                    = "10"
-      memory                 = "112Gi"
-      tensor_parallel_size   = 4
-      max_model_len          = 16384
-      max_num_seqs           = 4
-      max_num_batched_tokens = 8192
-      hf_overrides           = "{\"quantization_config\": {}}"
-      additional_config      = "{\"neuron_config\":{\"num_batched_tokens_buckets\":[8192],\"num_seqs_buckets\":[4]}}"
-    }
-  }
+  default = {}
 
   validation {
     condition     = alltrue([for k, p in var.serving_profiles : can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", k)) && length(k) <= 40])
@@ -150,6 +125,10 @@ variable "serving_profiles" {
     condition     = alltrue([for p in var.serving_profiles : contains(["neuron", "gpu"], p.hardware)])
     error_message = "Profile hardware must be \"neuron\" or \"gpu\"."
   }
+  validation {
+    condition     = alltrue([for p in var.serving_profiles : contains(keys(var.models), p.model)])
+    error_message = "Every profile's model must be a key of var.models."
+  }
 }
 
 variable "serving_profiles_allow_mutation" {
@@ -158,8 +137,3 @@ variable "serving_profiles_allow_mutation" {
   default     = false
 }
 
-variable "enable_serving_platform" {
-  description = "Install the serving platform (platform-charts/serving-platform): profile catalog + NEFF compile Jobs, for users deploying with platform-charts/serving. false = infra + weights in S3 only, for the manual vllm/ and ray/ manifests."
-  type        = bool
-  default     = false
-}

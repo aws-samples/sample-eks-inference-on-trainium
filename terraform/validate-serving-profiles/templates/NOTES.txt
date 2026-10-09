@@ -1,0 +1,23 @@
+{{- if not .Values.profiles }}
+No serving profiles defined - only the vended serve scripts (ConfigMap
+vllm-serve-script) are published. Admins add profiles via Terraform
+(var.serving_profiles).
+{{- else }}
+Validated serving profiles in namespace {{ .Release.Namespace }}:
+{{- range $name, $p := .Values.profiles }}
+{{- $r := include "platform.resolve" (dict "root" $ "name" $name "p" $p) | fromJson }}
+  - {{ $name }}  ({{ $p.model }}, {{ $p.hardware }}, nodepool {{ $p.nodepool }}, TP{{ $p.tensorParallelSize }}, max-model-len {{ $p.maxModelLen }}){{ if $r.compileJob }}  compile Job: {{ $r.compileJob }}{{ end }}
+{{- end }}
+
+List them / read one (serve flags, S3 paths, image):
+  kubectl get cm -n {{ .Release.Namespace }} -l serving.platform/profile \
+    -L serving.platform/model,serving.platform/hardware,serving.platform/nodepool
+  kubectl describe cm -n {{ .Release.Namespace }} vllm-profile-<name>
+
+Compile status (Complete = NEFFs are in s3://<bucket>/<model>/cache/):
+  kubectl get jobs -n {{ .Release.Namespace }} -l serving.platform/component=compile -L serving.platform/profile
+
+A deployment that uses a profile's exact env + image (e.g. envFrom the ConfigMap
+and run the vended serve.sh) starts from the precompiled cache. Anything else is
+off-profile and compiles at startup.
+{{- end }}

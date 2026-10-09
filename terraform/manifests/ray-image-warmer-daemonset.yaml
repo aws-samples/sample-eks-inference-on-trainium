@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ray-image-warmer
+  namespace: kube-system
+  labels:
+    app: ray-image-warmer
+spec:
+  selector:
+    matchLabels:
+      app: ray-image-warmer
+  template:
+    metadata:
+      labels:
+        app: ray-image-warmer
+    spec:
+      # Only Karpenter nodes (all pools set this label), never the MNG.
+      nodeSelector:
+        provisionerType: Karpenter
+      # Tolerate every taint so it runs on the neuron/gpu/karpenter pools.
+      tolerations:
+        - operator: Exists
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: warmer
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c", "sleep infinity"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi

@@ -54,7 +54,7 @@ cache, observability); the model is deployed with plain Kubernetes manifests.
   - `x86-cpu-karpenter` — **static (1 node)**, hosts the weights Job, the Ray head, and CPU apps.
   - Capacity Block pools — one **static** pool per block in `capacity_blocks`
     (reserved capacity, pinned to the block's instance type + AZ), keeping all of the
-    block's instances running: `neuron-trn2` (`trn2.3xlarge`) hosts the gpt-oss-20b
+    block's instances running: `neuron-trn2-3xl` (`trn2.3xlarge`) hosts the gpt-oss-20b
     deployment; optional `neuron-trn2-48xl` (`trn2.48xlarge`) and `gpu-p5-48xl`
     (`p5.48xlarge`) host the full-node deployments.
   - neuron — `trn1` and `inf2` pools for other workloads.
@@ -94,7 +94,7 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 # edit terraform/terraform.tfvars:
 #   region = "..."   # where your Capacity Block lives
 #   capacity_blocks = {
-#     "neuron-trn2" = {
+#     "neuron-trn2-3xl" = {
 #       reservation_id = "cr-..."        # aws ec2 describe-capacity-reservations
 #       az             = "..."           # the reservation's AZ (must match)
 #       instance_type  = "trn2.3xlarge"
@@ -106,7 +106,7 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 
 Each `capacity_blocks` entry becomes a static Karpenter NodePool named after its key
 that keeps all `node_count` instances of the block running until the block ends.
-The `vllm/` manifests select pools by name, so keep the keys `neuron-trn2`,
+The `vllm/` manifests select pools by name, so keep the keys `neuron-trn2-3xl`,
 `neuron-trn2-48xl`, and `gpu-p5-48xl`.
 
 Then init and apply (Terraform auto-loads `terraform.tfvars`):
@@ -123,7 +123,7 @@ add-ons (device plugins, GPU operator/DCGM, KubeRay, monitoring). It also starts
 **Cold-start optimizations.** Two things here cut model bootstrap from
 **5+ minutes to ~1 minute**:
 
-- **Static Karpenter nodes** — the `neuron-trn2` and `x86-cpu-karpenter` pools run in
+- **Static Karpenter nodes** — the `neuron-trn2-3xl` and `x86-cpu-karpenter` pools run in
   static mode (`replicas: 1`), so a Neuron node and an x86 node are kept warm and
   ready, and the weights + compile cache stay on the Neuron node's NVMe.
 - **Ray image warmer** — a DaemonSet (`ray-image-warmer`, kube-system) pre-pulls the
@@ -230,7 +230,7 @@ kubectl create configmap gpt-oss-20b-vllm-script --from-file=gpt_oss_20b_vllm.py
 envsubst '$CUSTOM_RAY_VLLM_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-trn2.yaml | kubectl apply -f -
 ```
 
-Karpenter provisions the nodes (head on the x86 pool, worker on the neuron-trn2 pool),
+Karpenter provisions the nodes (head on the x86 pool, worker on the neuron-trn2-3xl pool),
 the worker pulls the model directory from S3 to local NVMe, and Ray Serve starts the
 deployment. The Ray manifest uses the same vLLM config and cache directory as §2, so
 if vLLM already compiled on this node, Ray reuses the cache.

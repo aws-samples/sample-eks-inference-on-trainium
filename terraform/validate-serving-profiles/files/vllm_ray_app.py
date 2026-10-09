@@ -1,6 +1,6 @@
 """Ray Serve app for vLLM on Neuron via the standalone vLLM Neuron plugin.
 
-Vended by the serving-platform chart (vllm-serve-script ConfigMap) and mounted
+Vended by the validate-serving-profiles chart (vllm-serve-script ConfigMap) and mounted
 into RayService pods by the serving chart. Model + engine config come from the
 serving profile env, so the engine matches the profile's precompiled NEFFs.
 

@@ -1,4 +1,4 @@
-# Manual path: RayService for gpt-oss-20b on Neuron (no serving-platform
+# Manual path: RayService for gpt-oss-20b on Neuron (no validated serving
 # profiles). Head on the x86 pool, one worker on a trn2.3xlarge (1 device = 4
 # logical NeuronCores, TP4). The worker pulls the model dir from S3 (weights +
 # the shared cache/ = VLLM_CACHE_ROOT); graphs not already cached compile on first
@@ -241,8 +241,8 @@ spec:
             - name: RAY_memory_usage_threshold
               value: "0.95" # Set memory threshold
           nodeSelector:
-            # Pin to the neuron-trn2 Karpenter NodePool by name.
-            karpenter.sh/nodepool: neuron-trn2
+            # Pin to the neuron-trn2-3xl Karpenter NodePool by name.
+            karpenter.sh/nodepool: neuron-trn2-3xl
           tolerations:
           - key: "aws.amazon.com/neuron"
             operator: "Exists"

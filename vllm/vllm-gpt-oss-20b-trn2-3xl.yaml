@@ -1,4 +1,4 @@
-# Manual path: standalone vLLM deployment (no Ray, no serving-platform profiles)
+# Manual path: standalone vLLM deployment (no Ray, no validated serving profiles)
 # for gpt-oss-20b on Neuron. Single trn2.3xlarge (1 Trainium2 device = 4 logical
 # NeuronCores at the plugin's default LNC=2), TP4, BF16. Serves the
 # OpenAI-compatible API on :8080.
@@ -51,8 +51,8 @@ spec:
     spec:
       serviceAccountName: model-reader
       nodeSelector:
-        # Pin to the neuron-trn2 Karpenter NodePool by name.
-        karpenter.sh/nodepool: neuron-trn2
+        # Pin to the neuron-trn2-3xl Karpenter NodePool by name.
+        karpenter.sh/nodepool: neuron-trn2-3xl
       tolerations:
         - effect: NoSchedule
           key: aws.amazon.com/neuron
@@ -138,7 +138,7 @@ spec:
             - name: TENSOR_PARALLEL_SIZE
               value: "4"
             - name: MAX_NUM_SEQS
-              value: "4"
+              value: "8"
             - name: MAX_NUM_BATCHED_TOKENS
               value: "8192"
             - name: MAX_MODEL_LEN
@@ -148,7 +148,7 @@ spec:
             - name: HF_OVERRIDES
               value: '{"quantization_config": {}}'
             - name: ADDITIONAL_CONFIG
-              value: '{"neuron_config":{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[4]}}'
+              value: '{"neuron_config":{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[4,8]}}'
             # trn2 nodes here have no EFA; EFA affinity is a CPU perf hint, not
             # required for single-instance TP (collectives use NeuronLink).
             - name: NEURON_SKIP_EFA_AFFINITY

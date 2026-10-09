@@ -1,6 +1,6 @@
-# Default values for the serving-platform chart.
+# Default values for the validate-serving-profiles chart.
 #
-# Installed by Terraform (terraform/serving-platform.tf): the platform team edits
+# Installed by Terraform (terraform/serving-bootstrap.tf): the platform team edits
 # var.serving_profiles + infra vars in tfvars, and Terraform renders them, with
 # region / S3 paths / images, into these values. Don't install it by hand.
 #
@@ -15,11 +15,13 @@
 
 # ---- Infra (set by Terraform) -------------------------------------------------
 region: ""
-model:
-  name: ""                  # S3 prefix + local dir name, e.g. gpt-oss-20b
-s3:
-  modelUri: ""              # s3://<bucket>/<model> (weights; cache/ = shared compile cache)
-  weightsReadyUri: ""       # marker the Terraform weights Job writes; compile Jobs wait for it
+# Models (from var.models), keyed by model name = the model's folder:
+# s3://<bucket>/<name>/ in S3, /tmp/models/<name>/ on nodes. Profiles pick one.
+models: {}
+#  gpt-oss-20b:
+#    hfRepoId: openai/gpt-oss-20b
+#    s3Uri: s3://<bucket>/gpt-oss-20b            # weights; cache/ = shared compile cache
+#    weightsReadyUri: s3://<bucket>/gpt-oss-20b/.ready/weights
 images:
   # Pinned per hardware so users can't pick an image that misses the NEFF cache
   # (the compiler/SDK version is part of the cache key).
@@ -88,6 +90,7 @@ chartChecksum: ""
 # ---- Profiles (from var.serving_profiles) -------------------------------------
 # Names become K8s object names: lowercase letters, digits and '-', max 40 chars.
 #
+#   model                model (key of `models`)
 #   hardware             neuron | gpu (key into `hardware` above)
 #   nodepool             Karpenter NodePool for compile + serving
 #   devices              accelerator devices per pod (hardware.deviceResource)

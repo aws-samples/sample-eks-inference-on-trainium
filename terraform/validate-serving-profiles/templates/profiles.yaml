@@ -22,7 +22,7 @@ metadata:
   labels:
     {{- include "platform.labels" $ | nindent 4 }}
     serving.platform/profile: {{ $name }}
-    serving.platform/model: {{ $.Values.model.name }}
+    serving.platform/model: {{ $p.model }}
     serving.platform/hardware: {{ $p.hardware }}
     serving.platform/nodepool: {{ $p.nodepool }}
   annotations:

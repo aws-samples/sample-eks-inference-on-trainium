@@ -14,10 +14,10 @@ region = "us-east-2"
 # Your ML Capacity Blocks, keyed by NodePool name. Each becomes a static NodePool
 # that keeps all node_count instances of the block running (reserved capacity,
 # pinned to the block's instance type + AZ). The vllm/ manifests select these
-# pool names: neuron-trn2 (trn2.3xlarge), neuron-trn2-48xl, gpu-p5-48xl.
+# pool names: neuron-trn2-3xl (trn2.3xlarge), neuron-trn2-48xl, gpu-p5-48xl.
 # Find IDs/AZs/counts with: aws ec2 describe-capacity-reservations
 capacity_blocks = {
-  "neuron-trn2" = {
+  "neuron-trn2-3xl" = {
     reservation_id = "cr-xxxxxxxxxxxxxxxxx"
     az             = "us-east-2b"     # the reservation's AZ (must match)
     instance_type  = "trn2.3xlarge"
@@ -60,20 +60,30 @@ capacity_blocks = {
 # ray_version            = "2.56.1"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SERVING PROFILES — the catalog of serving configs this cluster supports.
-# Terraform publishes each as a vllm-profile-<name> ConfigMap (platform-charts/serving-
-# platform) and precompiles NEFFs for every neuron profile. Users deploy them
-# with platform-charts/serving. Profiles are immutable: change a config under a new name.
-# Default (variables.tf): trn2-tp4-16k on one trn2.3xlarge (1 device, TP4).
+# MODELS + VALIDATED SERVING PROFILES (platform)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Models to stage: name -> HuggingFace checkpoint. The name is the model's folder
+# everywhere (s3://<bucket>/<name>/, /tmp/models/<name>/ on nodes, API model id).
+# models = {
+#   "gpt-oss-20b" = "openai/gpt-oss-20b"
+# }
+
+# Validated serving configs users can build on (empty by default). Each becomes a
+# vllm-profile-<name> ConfigMap with its serve flags, S3 paths and image; neuron
+# profiles also get a compile Job that adds their NEFFs to s3://<bucket>/<model>/cache/,
+# so any deployment using the same config + image starts without compiling.
+# A compile Job takes the profile's devices on its NodePool for 20-40 min - add
+# profiles before users deploy on single-node Capacity Blocks. Profiles are
+# immutable: change a config under a new name.
 # serving_profiles = {
-#   "trn2-tp4-16k" = {
+#   "trn2-3xl-tp4-16k" = {
+#     model                  = "gpt-oss-20b"
 #     hardware               = "neuron"
-#     nodepool               = "neuron-trn2"
-#     devices                = 1         # trn2.3xlarge: 1 device = 4 logical NeuronCores (LNC=2)
-#     cpu                    = "10"      # below the node's allocatable (12 vCPU)
-#     memory                 = "112Gi"   # below the node's allocatable (128 GiB)
+#     nodepool               = "neuron-trn2-3xl"   # a capacity_blocks key or an on-demand pool
+#     devices                = 1               # trn2.3xlarge: 1 device = 4 logical NeuronCores (LNC=2)
+#     cpu                    = "10"            # below the node's allocatable (12 vCPU)
+#     memory                 = "112Gi"         # below the node's allocatable (128 GiB)
 #     tensor_parallel_size   = 4
 #     max_model_len          = 16384
 #     max_num_seqs           = 4
@@ -83,12 +93,3 @@ capacity_blocks = {
 #   }
 # }
 # vllm_gpu_image = "vllm/vllm-openai:v0.24.0"   # GPU serving; vLLM version matches the Neuron DLC
-
-# Serving platform on/off. false = infra + weights in S3 only; deploy manually
-# with vllm/ or ray/ (compiles on first start, cached on the node's NVMe).
-# enable_serving_platform = false
-
-# Models staged in S3 (one model-weights-<name> Job each).
-# models = {
-#   "gpt-oss-20b" = "openai/gpt-oss-20b"
-# }

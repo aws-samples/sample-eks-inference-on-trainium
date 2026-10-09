@@ -1,0 +1,32 @@
+# Ray head + worker PodMonitors so Prometheus scrapes Ray, autoscaler, dashboard,
+# and Ray Serve (incl. vLLM-on-Ray) metrics from the RayService pods in default.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ray-head-monitor
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  jobLabel: ray-head
+  namespaceSelector:
+    matchNames: ["default"]
+  selector:
+    matchLabels:
+      ray.io/node-type: head
+  podMetricsEndpoints:
+    - port: metrics
+      relabelings:
+        - action: replace
+          sourceLabels: ["__meta_kubernetes_pod_label_ray_io_cluster"]
+          targetLabel: ray_io_cluster
+    - port: as-metrics
+      relabelings:
+        - action: replace
+          sourceLabels: ["__meta_kubernetes_pod_label_ray_io_cluster"]
+          targetLabel: ray_io_cluster
+    - port: dash-metrics
+      relabelings:
+        - action: replace
+          sourceLabels: ["__meta_kubernetes_pod_label_ray_io_cluster"]
+          targetLabel: ray_io_cluster

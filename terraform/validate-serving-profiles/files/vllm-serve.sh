@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared vLLM launch command, vended by the serving-platform chart
+# Shared vLLM launch command, vended by the validate-serving-profiles chart
 # (vllm-serve-script ConfigMap). The compile Jobs and every vLLM serving pod run
 # it; every flag comes from the serving profile env (vllm-profile-<name>
 # ConfigMap), so compile and serve run the identical engine config and the NEFF

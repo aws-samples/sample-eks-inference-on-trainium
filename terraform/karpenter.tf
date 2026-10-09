@@ -126,20 +126,21 @@ locals {
   karpenter_manifests = {
     for f in fileset("${path.module}/karpenter", "{nodeclasses,nodepools}/*.yaml") : basename(f) => f
   }
-}
-
-resource "kubectl_manifest" "karpenter" {
-  for_each = local.karpenter_manifests
-
-  server_side_apply = true
-  yaml_body = templatefile("${path.module}/karpenter/${each.value}", {
+  karpenter_template_vars = {
     name                            = local.name
     x86_ami_name                    = var.x86_ami_name
     neuron_ami_name                 = var.neuron_ami_name
     gpu_ami_name                    = var.gpu_ami_name
     neuron_capacity_reservation_ids = local.neuron_capacity_reservation_ids
     gpu_capacity_reservation_ids    = local.gpu_capacity_reservation_ids
-  })
+  }
+}
+
+resource "kubectl_manifest" "karpenter" {
+  for_each = local.karpenter_manifests
+
+  server_side_apply = true
+  yaml_body         = templatefile("${path.module}/karpenter/${each.value}", local.karpenter_template_vars)
 
   depends_on = [
     helm_release.karpenter
@@ -168,11 +169,4 @@ resource "kubectl_manifest" "karpenter_capacity_block" {
   depends_on = [
     kubectl_manifest.karpenter
   ]
-}
-
-# The trn2.3xlarge pool used to be a static file under ./karpenter; keep the live
-# NodePool (and its node) instead of deleting and recreating it.
-moved {
-  from = kubectl_manifest.karpenter["neuron-trn2-nodepool.yaml"]
-  to   = kubectl_manifest.karpenter_capacity_block["neuron-trn2"]
 }

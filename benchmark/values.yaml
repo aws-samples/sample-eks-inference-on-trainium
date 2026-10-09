@@ -61,7 +61,7 @@ benchmark:
     prometheus:
       enabled: true
       url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
-      scrapeInterval: 15        # match the metrics-enabled ServiceMonitor interval
+      scrapeInterval: 1         # seconds; match the metrics-enabled ServiceMonitor interval
       service: ""               # Prometheus `service` label; default: target.baseUrl's host
       extraFilters: []          # more PromQL label matchers, e.g. ["namespace='default'"]
       perStage: true            # also report server metrics per load stage

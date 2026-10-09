@@ -54,7 +54,7 @@ Pass ctx. Returns JSON (use fromJson): { env, spec, scripts, offProfile }.
 {{- $spec := $specJson | fromJson -}}
 {{- $scripts := lookup "v1" "ConfigMap" $ns "vllm-serve-script" | default dict -}}
 {{- if not $scripts.data -}}
-{{- fail (printf "vllm-serve-script ConfigMap not found in namespace %q - is the serving platform installed?" $ns) -}}
+{{- fail (printf "vllm-serve-script ConfigMap not found in namespace %q - is the validate-serving-profiles release installed (terraform apply)?" $ns) -}}
 {{- end -}}
 {{- if and $ep.requirePrecompiled $spec.compileJob (not (include "serving.precompiled" (dict "root" $root "spec" $spec))) -}}
 {{- fail (printf "endpoint %q: profile %q is not precompiled yet - compile Job %s has not completed (requirePrecompiled=true)" .name $name $spec.compileJob) -}}

@@ -35,15 +35,21 @@ fromJson) with:
 {{- fail (printf "profile %q: missing required field %q" $name $k) -}}
 {{- end -}}
 {{- end -}}
-{{- $modelDir := printf "%s/%s" $v.paths.models (required "model.name is required" $v.model.name) -}}
+{{- $modelName := required (printf "profile %q: model is required" $name) $p.model -}}
+{{- $m := index ($v.models | default dict) $modelName -}}
+{{- if not $m -}}
+{{- fail (printf "profile %q: model %q not in .Values.models (%s)" $name $modelName (keys ($v.models | default dict) | sortAlpha | join ", ")) -}}
+{{- end -}}
+{{- $modelDir := printf "%s/%s" $v.paths.models $modelName -}}
 {{- $env := dict
   "SERVING_PROFILE" $name
   "AWS_REGION" (required "region is required" $v.region)
   "MODEL_ID" $modelDir
   "VLLM_CACHE_ROOT" (printf "%s/cache" $modelDir)
-  "S3_MODEL_URI" (required "s3.modelUri is required" $v.s3.modelUri)
-  "S3_CACHE_URI" (printf "%s/cache" $v.s3.modelUri)
-  "S3_WEIGHTS_READY_URI" (required "s3.weightsReadyUri is required" $v.s3.weightsReadyUri)
+  "S3_MODEL_URI" (required (printf "models.%s.s3Uri is required" $modelName) $m.s3Uri)
+  "S3_CACHE_URI" (printf "%s/cache" $m.s3Uri)
+  "S3_WEIGHTS_READY_URI" (required (printf "models.%s.weightsReadyUri is required" $modelName) $m.weightsReadyUri)
+  "VLLM_IMAGE" $image
   "TENSOR_PARALLEL_SIZE" (toString $p.tensorParallelSize)
   "MAX_MODEL_LEN" (toString $p.maxModelLen)
   "MAX_NUM_SEQS" (toString $p.maxNumSeqs)
@@ -61,7 +67,7 @@ One shared cache dir for every profile and image (entries are keyed by a hash of
 graph + shapes + compiler/SDK version, so they never collide). The per-profile
 marker records that this profile was compiled with this image.
 */ -}}
-{{- $_ := set $env "S3_CACHE_READY_URI" (printf "%s/.ready/cache/%s/%s" $v.s3.modelUri (regexReplaceAll "^.*:" $image "") $name) -}}
+{{- $_ := set $env "S3_CACHE_READY_URI" (printf "%s/.ready/cache/%s/%s" $m.s3Uri (regexReplaceAll "^.*:" $image "") $name) -}}
 {{- end -}}
 {{- range $k, $val := $hw.env -}}
 {{- $_ := set $env $k (toString $val) -}}
@@ -75,7 +81,7 @@ marker records that this profile was compiled with this image.
 {{- end -}}
 {{- $spec := dict
   "profile" $name
-  "model" $v.model.name
+  "model" $modelName
   "hardware" $p.hardware
   "nodepool" $p.nodepool
   "devices" $p.devices

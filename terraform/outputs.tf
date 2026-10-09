@@ -27,8 +27,8 @@ output "vllm_neuron_image" {
 }
 
 output "serving_profiles" {
-  description = "Serving profiles published to the cluster (vllm-profile-<name> ConfigMaps); empty when the serving platform is disabled."
-  value       = var.enable_serving_platform ? keys(var.serving_profiles) : []
+  description = "Validated serving profiles published to the cluster (vllm-profile-<name> ConfigMaps)."
+  value       = keys(var.serving_profiles)
 }
 
 output "vllm_gpu_image" {
