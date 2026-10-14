@@ -19,10 +19,13 @@ module "eks" {
 
   # EKS Addons
   cluster_addons = {
-    # CoreDNS (a Deployment) has no toleration for the `karpenter` taint, so it
-    # stays on the managed node group automatically. The DaemonSet addons below
-    # tolerate all taints and run on every node.
-    coredns                   = {}
+    # CoreDNS (a Deployment) runs on the managed node group. The DaemonSet
+    # addons below tolerate every taint and run on every node.
+    coredns = {
+      configuration_values = jsonencode({
+        nodeSelector = { "karpenter.sh/controller" = "true" }
+      })
+    }
     eks-node-monitoring-agent = {}
     eks-pod-identity-agent = {
       before_compute = true
@@ -84,4 +87,18 @@ module "eks" {
 
 
   tags = local.tags
+}
+# EKS does not propagate node group tags to the underlying ASG, and the account's
+# SpringClean sweep scales untagged ASGs to 0 - which takes down the Karpenter
+# controller and every system pod with it. Tag the ASG directly.
+resource "aws_autoscaling_group_tag" "default_node_group" {
+  for_each = toset(["auto-stop", "auto-delete"])
+
+  autoscaling_group_name = module.eks.eks_managed_node_groups["default"].node_group_autoscaling_group_names[0]
+
+  tag {
+    key                 = each.key
+    value               = "no"
+    propagate_at_launch = true
+  }
 }

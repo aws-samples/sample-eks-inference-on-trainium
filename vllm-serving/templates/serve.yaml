@@ -1,0 +1,91 @@
+{{- include "vllm-serving.validate" . }}
+{{- if eq .Values.mode "serve" }}
+# vLLM OpenAI-compatible server on .Values.port. One Service in front of all
+# replicas.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "vllm-serving.labels" . | nindent 4 }}
+    # Scraped by the cluster-wide `metrics-enabled` ServiceMonitor (port `http`,
+    # /metrics every 1s) - terraform/scrape-configs/.
+    metrics: enabled
+spec:
+  ports:
+    - name: http
+      port: {{ .Values.port }}
+      protocol: TCP
+      targetPort: http
+  selector:
+    {{- include "vllm-serving.selectorLabels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "vllm-serving.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  # Accelerator nodes have no spare devices for a surge pod.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "vllm-serving.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vllm-serving.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccounts.serve }}
+      nodeSelector:
+        karpenter.sh/nodepool: {{ .Values.nodepool }}
+      tolerations:
+        {{- include "vllm-serving.tolerations" . | nindent 8 }}
+      initContainers:
+        {{- include "vllm-serving.modelDownload" . | nindent 8 }}
+      containers:
+        - name: vllm
+          image: {{ .Values.image }}
+          imagePullPolicy: IfNotPresent
+          command: ["vllm", "serve", {{ include "vllm-serving.modelDir" . | quote }}, "--host", "0.0.0.0", "--port", {{ .Values.port | quote }}]
+          args:
+            {{- range include "vllm-serving.engineArgs" . | fromJsonArray }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - containerPort: {{ .Values.port }}
+              protocol: TCP
+              name: http
+          # Readiness only (no liveness): Ready once /health answers, i.e. after
+          # the model loads (+ compiles, on a Neuron cache miss: 20-40 min). No
+          # liveness probe, so a slow warmup never restarts the pod.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 60
+          resources:
+            {{- include "vllm-serving.resources" . | trim | nindent 12 }}
+          env:
+            {{- include "vllm-serving.env" . | nindent 12 }}
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: local-storage
+              mountPath: {{ .Values.paths.models }}
+      terminationGracePeriodSeconds: 10
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        - name: local-storage
+          hostPath:
+            path: {{ .Values.paths.nodeLocal }}
+            type: Directory
+{{- end }}

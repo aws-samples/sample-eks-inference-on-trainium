@@ -1,0 +1,14 @@
+# gpt-oss-20b on one p5.48xlarge: 8 replicas x TP1 (1 H100 each).
+# Values from the README's Section 2, step 1 table.
+hardware: gpu
+nodepool: gpu-p5-48xl
+model: gpt-oss-20b
+replicas: 8
+resources: { devices: 1, cpu: "22", memory: 220Gi }
+vllm:
+  tensorParallelSize: 1
+  maxModelLen: 8192
+  maxNumSeqs: 4
+  maxNumBatchedTokens: 8192
+  extraArgs:
+    - --dtype=bfloat16

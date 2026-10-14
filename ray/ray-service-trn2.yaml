@@ -1,34 +1,27 @@
-# Manual path: RayService for gpt-oss-20b on Neuron (no validated serving
-# profiles). Head on the x86 pool, one worker on a trn2.3xlarge (1 device = 4
-# logical NeuronCores, TP4). The worker pulls the model dir from S3 (weights +
-# the shared cache/ = VLLM_CACHE_ROOT); graphs not already cached compile on first
-# start into the node's NVMe. Same serve config + cache dir as
-# vllm/vllm-gpt-oss-20b-trn2-3xl.yaml, so the two share the cache.
+# RayService for gpt-oss-20b on one trn2.3xlarge (1 device = 4 logical
+# NeuronCores, TP4): Ray head on the x86 pool, one worker on the neuron-trn2-3xl
+# pool. The worker pulls the model dir from S3 (weights + the compile cache/ =
+# VLLM_CACHE_ROOT). The engine env below is the Step 1 trn2.3xlarge scenario -
+# the same values as the compile Job and the vLLM deployment, so the NEFFs are
+# cache hits.
 #
-#   kubectl create configmap gpt-oss-20b-vllm-script --from-file=gpt_oss_20b_vllm.py=ray/gpt_oss_20b_vllm.py --dry-run=client -o yaml | kubectl apply -f -
-#   envsubst '$CUSTOM_RAY_VLLM_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-trn2.yaml | kubectl apply -f -
+#   kubectl create configmap vllm-ray-app --from-file=ray/vllm_ray_app.py --dry-run=client -o yaml | kubectl apply -f -
+#   envsubst '$RAY_NEURON_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-trn2.yaml | kubectl apply -f -
 apiVersion: ray.io/v1
 kind: RayService
 metadata:
-  name: ray-gpt-oss-20b
+  name: gpt-oss-20b-trn2-3xl-ray
   namespace: default
 spec:
   serviceUnhealthySecondThreshold: 1800
   deploymentUnhealthySecondThreshold: 1800
   serveConfigV2: |
     applications:
-      - name: gpt-oss-20b-vllm
-        import_path: "gpt_oss_20b_vllm:deployment"
+      - name: gpt-oss-20b
+        import_path: "vllm_ray_app:deployment"
         route_prefix: "/"
-        deployments:
-          - name: gpt-oss-20b-vllm-deployment
-            autoscaling_config:
-              min_replicas: 1
-              max_replicas: 1
-              target_num_ongoing_requests_per_replica: 20
   rayClusterConfig:
     rayVersion: '2.56.1'
-    enableInTreeAutoscaling: true
     headGroupSpec:
       rayStartParams:
         dashboard-host: '0.0.0.0'
@@ -41,7 +34,7 @@ spec:
         spec:
           containers:
           - name: head
-            image: $CUSTOM_RAY_VLLM_IMAGE
+            image: $RAY_NEURON_IMAGE
             imagePullPolicy: IfNotPresent
             lifecycle:
               preStop:
@@ -58,12 +51,18 @@ spec:
               name: serve
             - containerPort: 52365
               name: dashboard-agent
+            # Scraped by the ray-head PodMonitor (terraform/scrape-configs): autoscaler
+            # and dashboard metrics on Ray's default ports. KubeRay adds `metrics` (8080).
+            - containerPort: 44217
+              name: as-metrics
+            - containerPort: 44227
+              name: dash-metrics
             volumeMounts:
             - mountPath: /tmp/ray
               name: ray-logs
-            - name: vllm-script
-              mountPath: /home/ray/python/gpt_oss_20b_vllm.py
-              subPath: gpt_oss_20b_vllm.py
+            - name: vllm-ray-app
+              mountPath: /home/ray/python/vllm_ray_app.py
+              subPath: vllm_ray_app.py
             resources:
               limits:
                 cpu: 4
@@ -78,9 +77,9 @@ spec:
               value: "8004"
             - name: PORT
               value: "8000"
-            # Serve app config - the deployment graph is built on the head (Serve
-            # controller imports the app), so gpt_oss_20b_vllm.py reads these here.
-            # Must match the worker values.
+            # The Serve controller imports the app on the head to build the
+            # deployment graph, so vllm_ray_app.py reads these here too. Must
+            # match the worker values.
             - name: MODEL_ID
               value: "/tmp/models/gpt-oss-20b"
             - name: TENSOR_PARALLEL_SIZE
@@ -93,8 +92,8 @@ spec:
               value: "16384"
             - name: HF_OVERRIDES
               value: '{"quantization_config": {}}'
-            - name: ADDITIONAL_CONFIG
-              value: '{"neuron_config":{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[4]}}'
+            - name: NEURON_CORES
+              value: "4"
             - name: RAY_memory_monitor_refresh_ms
               value: "0"  # Disable memory monitor
             - name: RAY_memory_usage_threshold
@@ -109,9 +108,9 @@ spec:
           volumes:
           - name: ray-logs
             emptyDir: {}
-          - name: vllm-script
+          - name: vllm-ray-app
             configMap:
-              name: gpt-oss-20b-vllm-script
+              name: vllm-ray-app
     workerGroupSpecs:
     - replicas: 1
       minReplicas: 1
@@ -147,7 +146,7 @@ spec:
                 # sync (CRT) reconciles against S3: warm NVMe -> transfers nothing,
                 # fresh node -> full pull, partial -> just the gap. Weights + cache/.
                 aws configure set s3.preferred_transfer_client crt
-                aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b/" /tmp/models/gpt-oss-20b/
+                aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b/" /tmp/models/gpt-oss-20b/ --exclude ".ready/*"
                 # This init container runs as root, but the Ray worker runs as the
                 # non-root `ray` user, and the plugin writes NEFFs / lock files into
                 # VLLM_CACHE_ROOT (inside the model dir) - make it writable by the ray user.
@@ -162,7 +161,7 @@ spec:
                 mountPath: /tmp/models
           containers:
           - name: worker
-            image: $CUSTOM_RAY_VLLM_IMAGE
+            image: $RAY_NEURON_IMAGE
             imagePullPolicy: IfNotPresent
             lifecycle:
               preStop:
@@ -171,9 +170,9 @@ spec:
             volumeMounts:
             - mountPath: /tmp/ray
               name: ray-logs
-            - name: vllm-script
-              mountPath: /home/ray/python/gpt_oss_20b_vllm.py
-              subPath: gpt_oss_20b_vllm.py
+            - name: vllm-ray-app
+              mountPath: /home/ray/python/vllm_ray_app.py
+              subPath: vllm_ray_app.py
             - name: local-storage
               mountPath: /tmp/models
             - mountPath: /dev/shm
@@ -203,10 +202,8 @@ spec:
               value: "4"
             - name: HF_OVERRIDES
               value: '{"quantization_config": {}}'
-            - name: ADDITIONAL_CONFIG
-              value: '{"neuron_config":{"num_batched_tokens_buckets":[8192],"num_seqs_buckets":[4]}}'
             - name: NEURON_CORES
-              value: "4" # NeuronCores used by the deployment (TP4)
+              value: "4" # NeuronCores each replica claims (TP4)
             - name: NEURON_RT_ASYNC_EXEC
               value: "1" # Enable asynchronous execution
             - name: NEURON_RT_NUM_CORES
@@ -220,8 +217,7 @@ spec:
               value: "1200"
             - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
               value: "1200"
-            # Compile cache inside the model dir (mirrors s3://<bucket>/gpt-oss-20b/cache/);
-            # shared with the vLLM manifest.
+            # Compile cache inside the model dir (mirrors s3://<bucket>/gpt-oss-20b/cache/).
             - name: VLLM_CACHE_ROOT
               value: "/tmp/models/gpt-oss-20b/cache"
             # system path
@@ -256,9 +252,9 @@ spec:
               medium: Memory
           - name: ray-logs
             emptyDir: {}
-          - name: vllm-script
+          - name: vllm-ray-app
             configMap:
-              name: gpt-oss-20b-vllm-script
+              name: vllm-ray-app
           - name: local-storage
             hostPath:
               path: /mnt/k8s-disks/0

@@ -1,12 +1,12 @@
 ################################################################################
-# Observability: the Prometheus/Grafana stack (kube-prometheus-stack +
-# grafana-operator), what Prometheus scrapes (ServiceMonitors / PodMonitors for
-# vLLM, neuron-monitor, Ray), and the Grafana dashboards. The metric exporters
+# Observability: the Prometheus/Grafana stack (kube-prometheus-stack), what
+# Prometheus scrapes (ServiceMonitors / PodMonitors for vLLM, neuron-monitor,
+# Ray), and the Grafana dashboards. The metric exporters
 # themselves (neuron-monitor, DCGM via the GPU operator) live in addons.tf.
 ################################################################################
 
 ################################################################################
-# Observability Stack (Kube Prometheus Stack + Grafana Operator)
+# Observability Stack (Kube Prometheus Stack)
 ################################################################################
 resource "helm_release" "kube_prometheus_stack" {
   name             = "kube-prometheus-stack"
@@ -23,6 +23,18 @@ resource "helm_release" "kube_prometheus_stack" {
       enabled: true
       defaultDashboardsEnabled: true
       adminPassword: "notforproductionuse"
+      # Load every ConfigMap labeled grafana_dashboard=1 (see grafana_dashboards
+      # below) into the "Inference" folder.
+      sidecar:
+        dashboards:
+          enabled: true
+          label: grafana_dashboard
+          labelValue: "1"
+          folderAnnotation: grafana_folder
+          provider:
+            foldersFromFilesStructure: true
+      nodeSelector:
+        karpenter.sh/controller: "true"
       service:
         type: ClusterIP
         port: 3000
@@ -42,6 +54,8 @@ resource "helm_release" "kube_prometheus_stack" {
             timeInterval: 1s
     prometheus:
       prometheusSpec:
+        nodeSelector:
+          karpenter.sh/controller: "true"
         serviceMonitorSelectorNilUsesHelmValues: false
         # Bounded so it can't starve the control-plane pods it shares the
         # managed node group with (~0.4 GiB at the 1s vLLM/Neuron/DCGM scrapes).
@@ -56,68 +70,25 @@ resource "helm_release" "kube_prometheus_stack" {
       # tainted Karpenter pools. Tolerate all taints so metrics cover all nodes.
       tolerations:
         - operator: Exists
+    # Controllers on the managed node group.
+    alertmanager:
+      alertmanagerSpec:
+        nodeSelector:
+          karpenter.sh/controller: "true"
+    prometheusOperator:
+      nodeSelector:
+        karpenter.sh/controller: "true"
+      admissionWebhooks:
+        patch:
+          nodeSelector:
+            karpenter.sh/controller: "true"
+    kube-state-metrics:
+      nodeSelector:
+        karpenter.sh/controller: "true"
     EOT
   ]
 
   depends_on = [module.eks]
-}
-
-resource "helm_release" "grafana_operator" {
-  name       = "grafana-operator"
-  namespace  = "monitoring"
-  repository = "https://grafana.github.io/helm-charts"
-  chart      = "grafana-operator"
-  version    = "5.16.0"
-  wait       = false
-
-  values = [
-    <<-EOT
-    operator:
-      scanAllNamespaces: true
-    EOT
-  ]
-
-  depends_on = [module.eks, helm_release.kube_prometheus_stack]
-}
-
-resource "kubectl_manifest" "grafana_admin_credentials" {
-  server_side_apply = true
-  yaml_body         = <<-YAML
-    apiVersion: v1
-    kind: Secret
-    metadata:
-      name: grafana-admin-credentials
-      namespace: monitoring
-    data:
-      admin-user: ${base64encode("admin")}
-      admin-password: ${base64encode("notforproductionuse")}
-  YAML
-
-  depends_on = [module.eks, helm_release.grafana_operator]
-}
-
-resource "kubectl_manifest" "external_grafana" {
-  server_side_apply = true
-  yaml_body         = <<-YAML
-    apiVersion: grafana.integreatly.org/v1beta1
-    kind: Grafana
-    metadata:
-      name: external-grafana
-      namespace: monitoring
-      labels:
-        dashboards: external-grafana
-    spec:
-      external:
-        url: http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local:3000
-        adminUser:
-          name: grafana-admin-credentials
-          key: admin-user
-        adminPassword:
-          name: grafana-admin-credentials
-          key: admin-password
-  YAML
-
-  depends_on = [module.eks, helm_release.grafana_operator, kubectl_manifest.grafana_admin_credentials, helm_release.kube_prometheus_stack]
 }
 
 ################################################################################
@@ -137,26 +108,23 @@ resource "kubectl_manifest" "scrape_configs" {
   ]
 }
 
-# One GrafanaDashboard per dashboard JSON under ./grafana-dashboards. The JSON is
-# embedded inline via spec.json (yamlencode handles the multi-line string), so no
-# ConfigMap is needed. grafana-operator loads it into the external-grafana instance.
-# Drop a new *.json in that folder and it is applied on the next `terraform apply`.
+# One ConfigMap per dashboard JSON under ./grafana-dashboards, picked up by the
+# Grafana dashboard sidecar (label grafana_dashboard=1). Drop a new *.json in
+# that folder and it is applied on the next `terraform apply`.
 resource "kubectl_manifest" "grafana_dashboards" {
   for_each = fileset("${path.module}/grafana-dashboards", "*.json")
 
   server_side_apply = true
   yaml_body = yamlencode({
-    apiVersion = "grafana.integreatly.org/v1beta1"
-    kind       = "GrafanaDashboard"
+    apiVersion = "v1"
+    kind       = "ConfigMap"
     metadata = {
-      name      = trimsuffix(each.value, ".json")
-      namespace = "monitoring"
-      labels    = { dashboards = "external-grafana" }
+      name        = "dashboard-${trimsuffix(each.value, ".json")}"
+      namespace   = "monitoring"
+      labels      = { grafana_dashboard = "1" }
+      annotations = { grafana_folder = "Inference" }
     }
-    spec = {
-      instanceSelector = { matchLabels = { dashboards = "external-grafana" } }
-      json             = file("${path.module}/grafana-dashboards/${each.value}")
-    }
+    data = { (each.value) = file("${path.module}/grafana-dashboards/${each.value}") }
   })
-  depends_on = [kubectl_manifest.external_grafana]
+  depends_on = [helm_release.kube_prometheus_stack]
 }

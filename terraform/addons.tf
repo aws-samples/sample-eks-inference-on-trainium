@@ -13,22 +13,15 @@ module "data_addons" {
 
   aws_neuron_device_plugin_helm_config = {
     version = "0.1.0"
-    # Enable default scheduler
     values = [
       <<-EOT
-      devicePlugin:
-        tolerations:
-        - key: aws.amazon.com/neuron
-          operator: Exists
-          effect: NoSchedule
-        - key: karpenter
-          operator: Exists
-          effect: NoSchedule
+      # DaemonSet: tolerate every taint so it lands on all Neuron nodes.
+      tolerations:
+        - operator: Exists
       # The chart's default nodeAffinity is a hardcoded instance-type allowlist
-      # that omits trn2.48xlarge (and any newer type), so the plugin never lands
-      # on trn2 and no aws.amazon.com/neuron devices are advertised. Replace it
-      # with a label match on neuron.amazonaws.com/neuron-device=true, which
-      # Karpenter sets on every neuron pool (trn1/trn2/inf2) - future-proof.
+      # that omits trn2 (and any newer type), so the plugin never lands there and
+      # no aws.amazon.com/neuron devices are advertised. Match the
+      # neuron.amazonaws.com/neuron-device=true label every Neuron pool sets.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -37,10 +30,6 @@ module "data_addons" {
               - key: neuron.amazonaws.com/neuron-device
                 operator: In
                 values: ["true"]
-      scheduler:
-        enabled: true
-      npd:
-        enabled: false
       EOT
     ]
   }
@@ -70,42 +59,44 @@ module "data_addons" {
           enabled: true
           interval: 1s
           scrapeTimeout: 1s
+      # Controllers (operator, NFD master/gc) on the managed node group.
+      operator:
+        nodeSelector:
+          karpenter.sh/controller: "true"
+      # DaemonSets (device plugin, DCGM exporter, ...): tolerate every taint.
       daemonsets:
         tolerations:
-          - key: nvidia.com/gpu
-            operator: Exists
-            effect: NoSchedule
-          - key: karpenter
-            operator: Exists
-            effect: NoSchedule
+          - operator: Exists
       # NFD labels GPU nodes (-> nvidia.com/gpu.present), which gates the device
-      # plugin; its worker isn't covered by daemonsets.tolerations, and the chart
-      # default doesn't tolerate the Karpenter pools' `karpenter` taint.
+      # plugin; its worker isn't covered by daemonsets.tolerations.
       node-feature-discovery:
+        master:
+          nodeSelector:
+            karpenter.sh/controller: "true"
+        gc:
+          nodeSelector:
+            karpenter.sh/controller: "true"
         worker:
           tolerations:
-            - key: node-role.kubernetes.io/control-plane
-              operator: Equal
-              value: ""
-              effect: NoSchedule
-            - key: nvidia.com/gpu
-              operator: Exists
-              effect: NoSchedule
-            - key: karpenter
-              operator: Exists
-              effect: NoSchedule
+            - operator: Exists
       EOT
     ]
   }
 
   #---------------------------------------------------------------
-  # KubeRay Operator (manages RayCluster / RayService / RayJob CRDs).
-  # Runs as a controller Deployment, so it stays on the managed node group.
+  # KubeRay Operator (manages RayCluster / RayService / RayJob CRDs), on the
+  # managed node group.
   #---------------------------------------------------------------
   enable_kuberay_operator = true
 
   kuberay_operator_helm_config = {
     version = "1.7.1"
+    values = [
+      <<-EOT
+      nodeSelector:
+        karpenter.sh/controller: "true"
+      EOT
+    ]
   }
 
   depends_on = [module.eks]
@@ -115,10 +106,10 @@ module "data_addons" {
 # neuron-monitor (Neuron hardware metrics exporter; scraped via the
 # neuron-monitor ServiceMonitor in observability.tf)
 ################################################################################
-# neuron-monitor: exposes Trainium/Inferentia hardware metrics (NeuronCore
-# utilization, memory, etc.) on :9010 as a Prometheus endpoint. Runs on every
-# Neuron node (all neuron pools set neuron.amazonaws.com/neuron-device=true) and
-# tolerates both the accelerator and the karpenter taints.
+# neuron-monitor: exposes Trainium hardware metrics (NeuronCore utilization,
+# memory, etc.) on :9010 as a Prometheus endpoint. Runs on every Neuron node
+# (all neuron pools set neuron.amazonaws.com/neuron-device=true) and tolerates
+# every taint.
 resource "kubectl_manifest" "neuron_monitor" {
   server_side_apply = true
   # Don't block the apply on the DaemonSet rollout: it only reaches every
@@ -137,8 +128,28 @@ resource "kubectl_manifest" "neuron_monitor_service" {
 
 
 ################################################################################
-# AWS Load Balancer Controller
+# AWS Load Balancer Controller (on the managed node group). Reconciles Ingress
+# and Service type LoadBalancer into ALBs/NLBs; IAM via EKS Pod Identity with
+# the controller's standard policy.
 ################################################################################
+
+module "aws_lb_controller_pod_identity" {
+  source  = "terraform-aws-modules/eks-pod-identity/aws"
+  version = "1.11.0"
+
+  name                            = "aws-load-balancer-controller"
+  attach_aws_lb_controller_policy = true
+
+  associations = {
+    this = {
+      cluster_name    = module.eks.cluster_name
+      namespace       = "kube-system"
+      service_account = "aws-load-balancer-controller"
+    }
+  }
+
+  tags = local.tags
+}
 
 resource "helm_release" "aws_load_balancer_controller" {
   name       = "aws-load-balancer-controller"
@@ -153,101 +164,10 @@ resource "helm_release" "aws_load_balancer_controller" {
       region: ${local.region}
       vpcId: ${module.vpc.vpc_id}
       enableServiceMutatorWebhook: false
+      nodeSelector:
+        karpenter.sh/controller: "true"
     EOT
   ]
 
   depends_on = [module.eks, module.aws_lb_controller_pod_identity]
-}
-
-module "aws_lb_controller_pod_identity" {
-  source  = "terraform-aws-modules/eks-pod-identity/aws"
-  version = "1.11.0"
-
-  name = "aws-load-balancer-controller"
-
-  attach_aws_lb_controller_policy = false
-
-  additional_policy_arns = {
-    ALBControllerPolicy = aws_iam_policy.alb_controller_policy.arn
-  }
-
-  associations = {
-    this = {
-      cluster_name    = module.eks.cluster_name
-      namespace       = "kube-system"
-      service_account = "aws-load-balancer-controller"
-    }
-  }
-
-  tags = local.tags
-
-  depends_on = [module.eks, aws_iam_policy.alb_controller_policy]
-}
-
-
-resource "aws_iam_policy" "alb_controller_policy" {
-  name        = "${module.eks.cluster_name}-AWSLoadBalancerControllerIAMPolicy"
-  description = "Policy for AWS Load Balancer Controller"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:AuthorizeSecurityGroupIngress",
-          "ec2:RevokeSecurityGroupIngress",
-          "ec2:DeleteSecurityGroup",
-          "ec2:DescribeAccountAttributes",
-          "ec2:DescribeAddresses",
-          "ec2:DescribeInstances",
-          "ec2:DescribeInstanceStatus",
-          "ec2:DescribeInternetGateways",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DescribeSecurityGroups",
-          "ec2:DescribeSubnets",
-          "ec2:DescribeVpcs",
-          "ec2:DescribeAvailabilityZones",
-          "ec2:CreateSecurityGroup",
-          "ec2:CreateTags",
-          "ec2:ModifyNetworkInterfaceAttribute",
-          "elasticloadbalancing:AddTags",
-          "elasticloadbalancing:DescribeListenerAttributes",
-          "elasticloadbalancing:DescribeTags",
-          "elasticloadbalancing:CreateListener",
-          "elasticloadbalancing:CreateLoadBalancer",
-          "elasticloadbalancing:CreateRule",
-          "elasticloadbalancing:CreateTargetGroup",
-          "elasticloadbalancing:DeleteListener",
-          "elasticloadbalancing:DeleteLoadBalancer",
-          "elasticloadbalancing:DeleteRule",
-          "elasticloadbalancing:DeleteTargetGroup",
-          "elasticloadbalancing:DeregisterTargets",
-          "elasticloadbalancing:DescribeListeners",
-          "elasticloadbalancing:DescribeLoadBalancerAttributes",
-          "elasticloadbalancing:DescribeLoadBalancers",
-          "elasticloadbalancing:DescribeRules",
-          "elasticloadbalancing:DescribeSSLPolicies",
-          "elasticloadbalancing:DescribeTargetGroupAttributes",
-          "elasticloadbalancing:DescribeTargetGroups",
-          "elasticloadbalancing:DescribeTargetHealth",
-          "elasticloadbalancing:ModifyListener",
-          "elasticloadbalancing:ModifyLoadBalancerAttributes",
-          "elasticloadbalancing:ModifyRule",
-          "elasticloadbalancing:ModifyTargetGroup",
-          "elasticloadbalancing:ModifyTargetGroupAttributes",
-          "elasticloadbalancing:RegisterTargets",
-          "elasticloadbalancing:RemoveTags",
-          "elasticloadbalancing:SetIpAddressType",
-          "elasticloadbalancing:SetSecurityGroups",
-          "elasticloadbalancing:SetSubnets",
-          "elasticloadbalancing:SetWebAcl",
-          "iam:CreateServiceLinkedRole"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-
-  depends_on = [module.eks]
 }

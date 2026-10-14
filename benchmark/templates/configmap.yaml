@@ -1,18 +1,22 @@
-{{- if .Values.benchmark.enabled }}
 {{- $root := . }}
 {{- $b := .Values.benchmark }}
+{{- /* One run id per install, shared by both tests of this run. */}}
+{{- $run := printf "%s-r%d-%s" .Release.Name .Release.Revision (now | date "20060102-150405") }}
+{{- $t := $b.target }}
+{{- $ctx := dict "root" $root "t" $t }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "benchmark.fullname" $root }}
+  name: {{ include "benchmark.targetName" $ctx }}
   namespace: {{ $root.Release.Namespace }}
   labels:
-    {{- include "benchmark.labels" $root | nindent 4 }}
+    {{- include "benchmark.labels" $ctx | nindent 4 }}
 data:
+  # Stored next to the results, so visualize.py knows the cost basis.
+  target.json: {{ dict "label" $t.label "baseUrl" $t.baseUrl "hourlyUsd" $t.hourlyUsd "run" $run | toJson | quote }}
   {{- range $test, $cfg := $b.tests }}
   {{- if $cfg.enabled }}
   config-{{ $test }}.yml: |
-    {{- include "benchmark.config" (dict "b" $b "cfg" $cfg "test" $test) | nindent 4 }}
+    {{- include "benchmark.config" (dict "b" $b "t" $t "cfg" $cfg "test" $test "run" $run) | nindent 4 }}
   {{- end }}
   {{- end }}
-{{- end }}

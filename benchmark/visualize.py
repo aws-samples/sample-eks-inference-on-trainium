@@ -1,119 +1,152 @@
 #!/usr/bin/env python3
-"""Summarize inference-perf benchmark results from S3.
+r"""Summarize inference-perf benchmark results from S3, endpoints side by side.
 
-Reads the latest latency and throughput runs for a given target label and prints
-the three answers the benchmark is designed to produce:
+For each target label it reads the latest run under s3://<bucket>/benchmarks/<label>/:
+  target.json                                  cost basis (hourlyUsd from the Helm values)
+  chat-latency/<run>/summary_lifecycle_metrics.json
+  chat-throughput/<run>/stage_<n>_lifecycle_metrics.json
 
-  - lowest p50/p95 latency (TTFT + ITL)
-  - highest sustained output tokens/sec (throughput sweep peak)
-  - best cost/performance (output tokens per dollar)
+and prints:
+  1. Latency at 1 req/s: TTFT, TPOT and request latency (client-side, p50/p95)
+  2. Throughput sweep: per load stage, achieved rate, output tokens/s, TTFT and
+     TPOT - where latency bends is where the endpoint saturates
+  3. Cost/performance at the peak stage: output tokens per $, $ per 1M output tokens
 
 Usage:
-  benchmark/visualize.py --bucket "$S3_BUCKET_NAME" --label "$TARGET_LABEL" \
-      --hourly-usd "$NODE_HOURLY_USD"
+  benchmark/visualize.py --bucket "$S3_BUCKET_NAME" \
+      --targets gpt-oss-20b-trn2-48xl gpt-oss-20b-p5-48xl \
+      [--hourly-usd gpt-oss-20b-trn2-48xl=<usd/hr> ...]   # overrides target.json
 
 Requires the AWS CLI on PATH with credentials that can read the bucket.
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 
-
-# Region for all S3 calls. Set from the bucket's actual location so cp/HeadObject
-# don't fail with "301 Moved Permanently" when the CLI default region differs.
+# Region for all S3 calls, from the bucket's location (avoids 301s when the CLI
+# default region differs).
 _REGION: str | None = None
 
 
 def _aws(*args: str) -> str:
-    cmd = ["aws", *args]
-    if _REGION:
-        cmd += ["--region", _REGION]
+    cmd = ["aws", *args] + (["--region", _REGION] if _REGION else [])
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
 
 
 def resolve_region(bucket: str) -> str:
-    """Return the bucket's region (us-east-1 reports empty LocationConstraint)."""
-    out = _aws(
-        "s3api", "get-bucket-location", "--bucket", bucket,
-        "--query", "LocationConstraint", "--output", "text",
-    ).strip()
+    """The bucket's region (us-east-1 reports an empty LocationConstraint)."""
+    out = _aws("s3api", "get-bucket-location", "--bucket", bucket,
+               "--query", "LocationConstraint", "--output", "text").strip()
     return "us-east-1" if out in ("", "None", "null") else out
 
 
-def latest_summary(bucket: str, label: str, test: str) -> dict | None:
-    """Return the parsed summary_lifecycle_metrics.json for the most recent run,
-    or None if there are no runs for this label/test under the bucket."""
-    prefix = f"benchmarks/{label}/{test}/"
+def s3_json(bucket: str, key: str) -> dict | None:
     try:
-        listing = _aws("s3", "ls", f"s3://{bucket}/{prefix}", "--recursive")
+        return json.loads(_aws("s3", "cp", f"s3://{bucket}/{key}", "-"))
     except subprocess.CalledProcessError:
         return None
-    # `aws s3 ls --recursive` lines are: <date> <time> <size> <key>. Pick the
-    # summary file with the latest (date, time) so the newest run wins regardless
-    # of its random folder suffix.
-    runs = []
-    for line in listing.splitlines():
-        parts = line.split()
-        if len(parts) >= 4 and parts[-1].endswith("summary_lifecycle_metrics.json"):
-            runs.append((parts[0] + " " + parts[1], parts[-1]))
-    if not runs:
-        return None
-    runs.sort()
-    body = _aws("s3", "cp", f"s3://{bucket}/{runs[-1][1]}", "-")
-    return json.loads(body)
+
+
+def latest_run(bucket: str, label: str, test: str) -> dict[str, str]:
+    """{file name: key} of the most recent run of one test (newest summary file wins)."""
+    try:
+        listing = _aws("s3", "ls", f"s3://{bucket}/benchmarks/{label}/{test}/", "--recursive")
+    except subprocess.CalledProcessError:
+        return {}
+    files = [(f"{p[0]} {p[1]}", p[-1]) for p in (l.split() for l in listing.splitlines()) if len(p) >= 4]
+    summaries = sorted(f for f in files if f[1].endswith("summary_lifecycle_metrics.json"))
+    if not summaries:
+        return {}
+    run_dir = summaries[-1][1].rsplit("/", 1)[0]
+    return {k.rsplit("/", 1)[1]: k for _, k in files if k.rsplit("/", 1)[0] == run_dir}
+
+
+def ms(summary: dict | None, key: str) -> str:
+    return "-" if not summary else f"{summary[key] * 1000:.0f}"
+
+
+def print_table(title: str, header: list[str], rows: list[list[str]]) -> None:
+    print(f"\n{title}")
+    widths = [max(len(r[i]) for r in [header, *rows]) for i in range(len(header))]
+    fmt = lambda r: "  ".join(c.ljust(w) if i == 0 else c.rjust(w) for i, (c, w) in enumerate(zip(r, widths)))
+    print(fmt(header))
+    print("  ".join("-" * w for w in widths))
+    for r in rows:
+        print(fmt(r))
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bucket", required=True, help="S3 results bucket name")
-    ap.add_argument("--label", required=True, help="target label (e.g. vllm, ray)")
-    ap.add_argument(
-        "--hourly-usd",
-        type=float,
-        required=True,
-        help="node on-demand $/hr for the cost/performance metric",
-    )
+    ap.add_argument("--targets", nargs="+", required=True, metavar="LABEL", help="benchmark target labels")
+    ap.add_argument("--hourly-usd", nargs="*", default=[], metavar="LABEL=USD",
+                    help="override a target's $/hr (default: hourlyUsd from its target.json)")
     args = ap.parse_args()
-
-    if not args.bucket or not args.label:
-        ap.error(
-            "--bucket and --label must be non-empty "
-            f"(got bucket={args.bucket!r}, label={args.label!r}); "
-            "check that $S3_BUCKET_NAME and $TARGET_LABEL are exported."
-        )
+    if not args.bucket:
+        ap.error("--bucket is empty; check that $S3_BUCKET_NAME is exported.")
+    overrides = dict(o.split("=", 1) for o in args.hourly_usd)
 
     global _REGION
     _REGION = resolve_region(args.bucket)
 
-    print(f"\n=== Benchmark results: {args.label} ===\n")
+    latency_rows, verdict_rows = [], []
+    for label in args.targets:
+        target = s3_json(args.bucket, f"benchmarks/{label}/target.json") or {}
+        usd = float(overrides.get(label, target.get("hourlyUsd") or 0))
 
-    lat = latest_summary(args.bucket, args.label, "chat-latency")
-    if lat:
-        s = lat["successes"]
-        ttft = s["latency"]["time_to_first_token"]
-        itl = s["latency"]["time_per_output_token"]
-        print("CHAT-LATENCY  (ShareGPT, 1 req/s, zero contention)")
-        print(f"  TTFT  p50 {ttft['median']*1000:8.1f} ms   p95 {ttft['p95']*1000:8.1f} ms")
-        print(f"  ITL   p50 {itl['median']*1000:8.2f} ms   p95 {itl['p95']*1000:8.2f} ms\n")
-    else:
-        print(f"CHAT-LATENCY  no results at s3://{args.bucket}/benchmarks/{args.label}/chat-latency/\n")
+        # 1. Latency at 1 req/s
+        lat = latest_run(args.bucket, label, "chat-latency")
+        s = (s3_json(args.bucket, lat["summary_lifecycle_metrics.json"]) or {}).get("successes") if lat else None
+        l = s["latency"] if s else {}
+        latency_rows.append([
+            label,
+            ms(l.get("time_to_first_token"), "median"), ms(l.get("time_to_first_token"), "p95"),
+            ms(l.get("time_per_output_token"), "median"), ms(l.get("time_per_output_token"), "p95"),
+            ms(l.get("request_latency"), "median"),
+        ])
 
-    thr = latest_summary(args.bucket, args.label, "chat-throughput")
-    if thr:
-        s = thr["successes"]
-        tps = s["throughput"]["output_tokens_per_sec"]
-        ttft = s["latency"]["time_to_first_token"]
-        print("CHAT-THROUGHPUT  (ShareGPT, sustained peak)")
-        print(f"  Output tokens/sec {tps:10.1f}   TTFT p95 {ttft['p95']*1000:8.1f} ms\n")
-        print("COST / PERFORMANCE")
-        print(
-            f"  {tps/args.hourly_usd:10.1f} output tokens per dollar"
-            f"  (@ ${args.hourly_usd:.2f}/hr)\n"
+        # 2. Throughput sweep, stage by stage
+        thr = latest_run(args.bucket, label, "chat-throughput")
+        stages = sorted(
+            (int(re.search(r"stage_(\d+)_", f).group(1)), s3_json(args.bucket, k))
+            for f, k in thr.items() if re.match(r"stage_\d+_lifecycle_metrics\.json", f)
         )
-    else:
-        print(f"CHAT-THROUGHPUT  no results at s3://{args.bucket}/benchmarks/{args.label}/chat-throughput/\n")
+        rows, peak = [], None
+        for n, st in stages:
+            if not st:
+                continue
+            succ, load = st["successes"], st["load_summary"]
+            tps = succ["throughput"]["output_tokens_per_sec"]
+            fails = st.get("failures", {}).get("count", 0)
+            rows.append([
+                str(n), f"{load.get('requested_rate', 0):.2f}", f"{load.get('achieved_rate', 0):.2f}",
+                f"{tps:.0f}", ms(succ["latency"].get("time_to_first_token"), "median"),
+                ms(succ["latency"].get("time_to_first_token"), "p95"),
+                ms(succ["latency"].get("time_per_output_token"), "median"), str(fails),
+            ])
+            if fails == 0 and (peak is None or tps > peak[1]):
+                peak = (n, tps)
+        if rows:
+            print_table(f"THROUGHPUT SWEEP - {label}  (ShareGPT, load ramped to saturation)",
+                        ["stage", "req/s asked", "req/s got", "out tok/s", "TTFT p50", "TTFT p95", "TPOT p50", "errors"], rows)
+        else:
+            print(f"\nTHROUGHPUT SWEEP - {label}: no results under s3://{args.bucket}/benchmarks/{label}/chat-throughput/")
 
+        # 3. Cost/performance at the peak error-free stage
+        peak_txt = f"{peak[1]:.0f} (stage {peak[0]})" if peak else "-"
+        if peak and usd > 0:
+            tokens_per_usd = peak[1] * 3600 / usd
+            verdict_rows.append([label, peak_txt, f"{usd:.2f}", f"{tokens_per_usd:,.0f}", f"{1e6 / tokens_per_usd:.2f}"])
+        else:
+            verdict_rows.append([label, peak_txt, f"{usd:.2f}" if usd > 0 else "-", "-", "-"])
+
+    print_table("LATENCY at 1 req/s  (ShareGPT, zero contention; client-side, ms)",
+                ["target", "TTFT p50", "TTFT p95", "TPOT p50", "TPOT p95", "request p50"], latency_rows)
+    print_table("COST / PERFORMANCE at peak throughput  (hourlyUsd from the Helm values, or --hourly-usd)",
+                ["target", "peak out tok/s", "node $/hr", "out tokens per $", "$ per 1M out tokens"], verdict_rows)
+    print()
     return 0
 
 

@@ -89,7 +89,7 @@ resource "helm_release" "karpenter" {
       clusterEndpoint: ${module.eks.cluster_endpoint}
       interruptionQueue: ${module.karpenter.queue_name}
       # StaticCapacity is Alpha and off by default; required for NodePool
-      # spec.replicas (the neuron-trn1 static pool) to actually create nodes.
+      # spec.replicas (the static Capacity Block pools) to actually create nodes.
       # Chart values key is camelCase (staticCapacity); it renders to
       # FEATURE_GATES=...StaticCapacity=true... on the controller.
       featureGates:
@@ -102,67 +102,59 @@ resource "helm_release" "karpenter" {
       repository_password
     ]
   }
+  # module.vpc: module.eks only references the VPC ID and subnets, so without
+  # this the NAT gateway/routes can be destroyed while the controller still
+  # needs egress to the EC2 API to terminate its nodes.
   depends_on = [
+    module.vpc,
     module.eks,
     module.karpenter,
     helm_release.karpenter_crd
   ]
 }
 
+# Karpenter manifests under ./karpenter:
+#   nodeclasses/*.yaml                    EC2NodeClasses: x86-cpu-karpenter, neuron, gpu
+#   nodepools/*.yaml                      dynamic NodePools: x86-cpu-karpenter, gpu-g6e
+#   capacity-block-nodepool.yaml.tftpl    one static NodePool per var.capacity_blocks_nodepools entry
+# Each Capacity Block's reservation ID is added to its hardware's NodeClass.
 locals {
-  # Capacity Blocks each NodeClass may launch into. Karpenter only uses one when
-  # a NodePool's requirements (instance type, AZ, capacity-type reserved) match.
-  neuron_capacity_reservation_ids = [for k, b in var.capacity_blocks : b.reservation_id if b.hardware == "neuron"]
-  gpu_capacity_reservation_ids    = [for k, b in var.capacity_blocks : b.reservation_id if b.hardware == "gpu"]
-}
-
-# Karpenter manifests, all under ./karpenter:
-#   nodeclasses/*.yaml        EC2NodeClasses (x86, neuron, gpu)
-#   nodepools/*.yaml          on-demand / static NodePools
-#   capacity-blocks/*.tftpl   template for the var.capacity_blocks NodePools
-# Keyed by file name (not path), so moving files between folders doesn't
-# recreate the live objects. Each YAML is rendered with templatefile.
-locals {
-  karpenter_manifests = {
-    for f in fileset("${path.module}/karpenter", "{nodeclasses,nodepools}/*.yaml") : basename(f) => f
-  }
   karpenter_template_vars = {
     name                            = local.name
     x86_ami_name                    = var.x86_ami_name
     neuron_ami_name                 = var.neuron_ami_name
     gpu_ami_name                    = var.gpu_ami_name
-    neuron_capacity_reservation_ids = local.neuron_capacity_reservation_ids
-    gpu_capacity_reservation_ids    = local.gpu_capacity_reservation_ids
+    neuron_capacity_reservation_ids = [for k, b in var.capacity_blocks_nodepools : b.reservation_id if b.hardware == "neuron"]
+    gpu_capacity_reservation_ids    = [for k, b in var.capacity_blocks_nodepools : b.reservation_id if b.hardware == "gpu"]
   }
 }
 
 resource "kubectl_manifest" "karpenter" {
-  for_each = local.karpenter_manifests
+  for_each = fileset("${path.module}/karpenter", "{nodeclasses,nodepools}/*.yaml")
 
   server_side_apply = true
-  yaml_body         = templatefile("${path.module}/karpenter/${each.value}", local.karpenter_template_vars)
+  # On destroy, block until finalizers clear (Karpenter has terminated the
+  # nodes) so the controller isn't uninstalled while instances are still up.
+  wait      = true
+  yaml_body = templatefile("${path.module}/karpenter/${each.value}", local.karpenter_template_vars)
 
   depends_on = [
     helm_release.karpenter
   ]
 }
 
-# One static NodePool per Capacity Block (var.capacity_blocks), keeping every
-# instance in the block running.
 resource "kubectl_manifest" "karpenter_capacity_block" {
-  for_each = var.capacity_blocks
+  for_each = var.capacity_blocks_nodepools
 
   server_side_apply = true
-  yaml_body = templatefile("${path.module}/karpenter/capacity-blocks/nodepool.yaml.tftpl", {
-    pool_name       = each.key
-    reservation_id  = each.value.reservation_id
-    az              = each.value.az
-    instance_type   = each.value.instance_type
-    instance_family = split(".", each.value.instance_type)[0]
-    node_count      = each.value.node_count
-    hardware        = each.value.hardware
-    node_class      = each.value.hardware
-    expire_after    = each.value.expire_after
+  wait              = true
+  yaml_body = templatefile("${path.module}/karpenter/capacity-block-nodepool.yaml.tftpl", {
+    pool_name      = each.key
+    reservation_id = each.value.reservation_id
+    instance_type  = each.value.instance_type
+    az             = each.value.az
+    node_count     = each.value.node_count
+    hardware       = each.value.hardware
   })
 
   # NodeClasses first (they carry the reservation selector terms).

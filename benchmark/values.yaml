@@ -1,43 +1,43 @@
 # Default values for the benchmark chart.
 #
-# One `helm install <label>` fans out one Job per enabled test against a single
-# target endpoint. The only things that change between endpoints (vLLM, Ray, or
-# your own GPU deploy) are `target.baseUrl` and `target.label` — everything else
-# stays fixed so results are comparable across runs.
+# One release benchmarks one endpoint: `helm upgrade --install bench-<endpoint>
+# benchmark/ -f benchmark/values-<endpoint>.yaml`. Its Job runs the tests
+# sequentially (runOrder). Everything here is shared by every endpoint; the
+# endpoint file only sets the target (and, for small nodes, the load), so a diff
+# of two endpoint files shows exactly what differs between runs.
 
 benchmark:
-  enabled: true
-
   image:
     repository: quay.io/inference-perf/inference-perf
     tag: v0.6.1
     pullPolicy: IfNotPresent
 
-  # Reuse the pre-provisioned model-uploader SA: EKS Pod Identity already wires it
-  # to an IAM role with S3 read+write on the model cache bucket, which is where we
-  # store benchmark results. (model-reader is read-only, so it can't be used here.)
+  # model-uploader: EKS Pod Identity with S3 read+write on the model bucket,
+  # where results are stored (model-reader is read-only).
   serviceAccount: model-uploader
 
   job:
-    backoffLimit: 1
+    backoffLimit: 0
     ttlSecondsAfterFinished: 86400
 
-  # ---- Target endpoint (override per run) --------------------------------------
-  # label      : free-form tag; becomes the S3 path segment so runs never collide
-  #              (e.g. vllm, ray, gpu-l40s). Override with --set target.label=...
-  # baseUrl    : in-cluster URL of the endpoint under test.
-  #                vLLM  : http://gpt20b-trn2-3xl-vllm.default.svc.cluster.local:8080 (GPU: gpt20b-p5-4xl-vllm)
-  #                Ray   : http://ray-gpt-oss-20b-serve-svc.default.svc.cluster.local:8000
-  # modelName  : must match the served model name (vLLM's MODEL_ID). Both the
-  #              standalone vLLM and the Ray deploy serve under this path.
-  # tokenizer  : HF id used only to count tokens client-side.
+  # ---- Endpoint under test (set by the endpoint file) ----------------------------
+  # label     : results path segment (use the endpoint's Helm release name,
+  #             e.g. gpt-oss-20b-trn2-48xl).
+  # baseUrl   : in-cluster URL of the endpoint (vllm-serving Service, port 8080).
+  # hourlyUsd : the node's $/hr (Capacity Block or On-Demand price) for the
+  #             cost/performance metric. Stored with the results.
   target:
-    label: vllm
-    serverType: vllm
+    label: ""
+    baseUrl: ""
+    hourlyUsd: 0
+
+  # ---- Shared by every endpoint -------------------------------------------------
+  # modelName : the served model id (= model dir on the node).
+  # tokenizer : HF id, used client-side to count tokens.
+  server:
+    type: vllm
     modelName: /tmp/models/gpt-oss-20b
-    baseUrl: http://gpt20b-trn2-3xl-vllm.default.svc.cluster.local:8080
     tokenizerPath: openai/gpt-oss-20b
-    ignoreEos: true
 
   api:
     type: completion
@@ -45,35 +45,19 @@ benchmark:
 
   storage:
     s3:
-      bucketName: ""            # set via --set storage.s3.bucketName=$S3_BUCKET_NAME
-      pathPrefix: benchmarks    # -> benchmarks/<label>/<test>/<run-id>/
+      bucketName: ""            # --set benchmark.storage.s3.bucketName=$S3_BUCKET_NAME
+      pathPrefix: benchmarks    # -> benchmarks/<label>/<test>/<run>/
 
-  # ---- Server-side metrics (Prometheus) ---------------------------------------
-  # inference-perf queries Prometheus for the target's vLLM metrics (TTFT, TPOT,
-  # queue time, KV-cache use, ... as the server measured them) over each run and
-  # writes them to S3 next to the client-side report, so both views cover the
-  # same window. Queries are filtered to model_name=target.modelName plus the
-  # target's Service, so other endpoints serving the same model don't mix in.
-  # Works for the standalone vLLM Services (scraped by the metrics-enabled
-  # ServiceMonitor); Ray Serve exports vLLM metrics differently - set
-  # enabled=false for Ray targets.
+  # Server-side vLLM metrics: inference-perf queries Prometheus for each target's
+  # vLLM metrics over the same window and stores them next to the client-side
+  # report. Filtered by the target's Service, so endpoints never mix.
   metrics:
     prometheus:
       enabled: true
       url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
-      scrapeInterval: 1         # seconds; match the metrics-enabled ServiceMonitor interval
-      service: ""               # Prometheus `service` label; default: target.baseUrl's host
+      scrapeInterval: 1         # seconds; matches the metrics-enabled ServiceMonitor
       extraFilters: []          # more PromQL label matchers, e.g. ["namespace='default'"]
       perStage: true            # also report server metrics per load stage
-
-  # ---- Cost basis for the cost/performance metric ------------------------------
-  # Node on-demand $/hr, used at visualize time as: peak output tok/s ÷ $/hr.
-  # Default is a single trn2.48xlarge (us-west-2 on-demand, approx). Override with
-  # --set cost.hourlyUsd=... when benchmarking a different instance (e.g. a GPU).
-  # NOTE: verify current pricing for your region before quoting results.
-  cost:
-    hourlyUsd: 35.0
-    note: "trn2.48xlarge on-demand (approx; verify current pricing for your region)"
 
   # No extra pip deps needed for the gpt-oss tokenizer (fast tokenizer.json).
   dependencies:
@@ -81,40 +65,32 @@ benchmark:
 
   resources:
     requests:
-      cpu: "2"
-      memory: 4Gi
-    limits:
       cpu: "4"
       memory: 8Gi
+    limits:
+      cpu: "8"
+      memory: 16Gi
 
-  # Prefer scheduling in the same zone as the inference pods (soft, never blocks).
-  # Default matches the standalone vLLM deploy; harmless for Ray (just a hint).
-  affinity:
-    enabled: true
-    targetLabels:
-      model: gpt-oss-20b
+  # Benchmark pods run on the x86 pool, never on the accelerator nodes they measure.
+  nodeSelector:
+    karpenter.sh/nodepool: x86-cpu-karpenter
 
-  # Tests run SEQUENTIALLY in one pod in this order (a test is skipped if it is
-  # not enabled below). chat-latency runs first, under zero competing load, so its
-  # numbers aren't polluted by chat-throughput saturating the endpoint.
+  # Tests run SEQUENTIALLY inside each target's Job, in this order (disabled
+  # tests are skipped). chat-latency first, under zero competing load.
   runOrder:
     - chat-latency
     - chat-throughput
 
   # ---- The tests ---------------------------------------------------------------
-  # Both tests use the SAME realistic ShareGPT chat workload (real prompts,
-  # natural lengths, generation stops at EOS) and differ only in load, so the
-  # numbers form one coherent story for a chat app:
-  #   chat-latency    : single-request floor at 1 rps — best-case p50/p95 TTFT/ITL.
-  #   chat-throughput : rates ramped to saturation — peak sustained output tok/s,
-  #                     which also feeds the cost/performance number.
-  #
-  # ShareGPT auto-downloads from HuggingFace at job start (the pod already needs HF
-  # egress for the tokenizer); set data.path to load from a pre-staged file.
+  # Both use the SAME real ShareGPT chat workload (first turn of each
+  # conversation as the prompt, generation stops at EOS), read in file order -
+  # every endpoint gets the identical prompts in the identical order.
+  # ShareGPT auto-downloads from HuggingFace at job start.
   tests:
+    # Best-case latency: a constant 1 req/s, far below saturation.
     chat-latency:
       enabled: true
-      description: "Best-case p50/p95 latency on real ShareGPT prompts (1 rps)"
+      description: "Best-case TTFT / TPOT on real ShareGPT prompts (1 req/s)"
       data:
         type: shareGPT
       ignoreEos: false
@@ -122,27 +98,37 @@ benchmark:
         type: constant
         numWorkers: 4
         stages:
-          - { rate: 1, duration: 30 }
+          - { rate: 1, duration: 60 }
 
+    # Throughput: inference-perf first probes the endpoint (a burst of
+    # numRequests over 5 s, measuring how fast it drains), estimates the
+    # saturation rate, then runs numStages stages from 1 req/s up to it.
+    # Sized for 8 replicas x max_num_seqs 4 = 32 sequences in flight per node:
+    # ~2 min probe + 5 x 60 s stages.
     chat-throughput:
       enabled: true
-      description: "Sustained output token throughput on real ShareGPT prompts"
-      # Real ShareGPT chat prompts (auto-downloaded from HuggingFace) instead of a
-      # synthetic distribution, so throughput reflects a realistic workload.
+      description: "Latency vs load up to saturation on real ShareGPT prompts (sweep)"
       data:
         type: shareGPT
-      # Let generation stop at EOS so output lengths are real (ignore_eos=true
-      # would force fixed-length decode, distorting the throughput number).
       ignoreEos: false
       load:
         type: constant
         numWorkers: 8
-        # Fixed increasing rates instead of an auto-sweep: with max_num_seqs=4 the
-        # saturation point is already known (the server batches 4), so the sweep's
-        # calibration stage (Stage -1) just wastes time and times out. Read peak
-        # output tok/s off the stage where TTFT balloons but throughput plateaus.
-        stages:
-          - { rate: 1, duration: 30 }
-          - { rate: 2, duration: 30 }
-          - { rate: 4, duration: 30 }
-
+        sweep:
+          type: linear
+          numRequests: 200
+          timeout: 180
+          numStages: 5
+          stageDuration: 60
+          saturationPercentile: 95
+      # Stop the run once the endpoint is past saturation, instead of running
+      # the remaining stages against a growing queue: requests unanswered after
+      # requestTimeoutSeconds fail, and when at least errorRate of the requests
+      # finishing in a windowSeconds window fail, the run ends. Stages completed
+      # before that are reported as usual.
+      stopAtSaturation:
+        enabled: true
+        requestTimeoutSeconds: 120
+        windowSeconds: 30
+        errorRate: 0.5
+        minSamples: 10

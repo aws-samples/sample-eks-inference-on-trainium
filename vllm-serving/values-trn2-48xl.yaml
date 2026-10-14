@@ -1,0 +1,25 @@
+# gpt-oss-20b on one trn2.48xlarge: 8 replicas x TP8 (2 Trainium2 devices each).
+# Values from the README's Section 2, step 1 table. Used for both the Neuron
+# compile (--set mode=compile) and serving, so the NEFF cache keys match.
+hardware: neuron
+nodepool: neuron-trn2-48xl
+model: gpt-oss-20b
+replicas: 8
+resources: { devices: 2, cpu: "22", memory: 220Gi }
+vllm:
+  tensorParallelSize: 8
+  maxModelLen: 8192
+  maxNumSeqs: 4
+  # Segment size for prefill: ShareGPT prompts are mostly short (p50 ~135,
+  # p90 ~1K tokens), so a 1024 segment pads far less than 8192 while ~90%
+  # of prompts still prefill in one pass.
+  maxNumBatchedTokens: 1024
+  extraArgs:
+    - '--hf-overrides={"quantization_config": {}}'
+    # Decode graphs per context length (plus the max_model_len fallback), so
+    # short conversations don't decode against an 8K-padded KV cache.
+    - '--additional-config={"neuron_config": {"decode_context_length_buckets": [2048, 4096]}}'
+env:
+  VLLM_NEURON_COMPILATION_TIMEOUT: "1200"
+  VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1200"
+  NEURON_SKIP_EFA_AFFINITY: "1"

@@ -1,0 +1,44 @@
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: gpu-g6e
+spec:
+  # Dynamic, on-demand (or Spot) GPU capacity: g6e = 1x NVIDIA L40S 48 GB at the
+  # sizes below. Karpenter launches a node when a pod needs one and consolidates
+  # it away when it's empty.
+  template:
+    metadata:
+      labels:
+        provisionerType: Karpenter
+        nvidia.com/gpu: "true"
+    spec:
+      taints:
+        - key: nvidia.com/gpu
+          value: "true"
+          effect: "NoSchedule"
+        - key: karpenter
+          value: "true"
+          effect: "NoSchedule"
+      requirements:
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["g6e.xlarge", "g6e.2xlarge"]
+        - key: "kubernetes.io/arch"
+          operator: In
+          values: ["amd64"]
+        - key: "karpenter.sh/capacity-type"
+          operator: In
+          values: ["on-demand", "spot"]
+      expireAfter: 720h
+      terminationGracePeriod: 24h
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: gpu
+  limits:
+    nvidia.com/gpu: 4
+    cpu: 64
+    memory: 512Gi
+  disruption:
+    consolidateAfter: 300s
+    consolidationPolicy: WhenEmptyOrUnderutilized

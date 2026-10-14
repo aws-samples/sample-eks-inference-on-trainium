@@ -3,28 +3,37 @@
 {{- .Chart.Name -}}
 {{- end -}}
 
-{{/* Fully qualified name: <release>-<label> so vllm/ray runs never collide */}}
-{{- define "benchmark.fullname" -}}
-{{- printf "%s-%s" .Release.Name .Values.benchmark.target.label | trunc 63 | trimSuffix "-" -}}
+{{/*
+Job / ConfigMap name: <release>-r<revision>. The Helm revision makes every
+`helm upgrade --install` a fresh Job (a Job's spec is immutable), and Helm
+deletes the previous revision's Job. Pass { root, t }.
+*/}}
+{{- define "benchmark.targetName" -}}
+{{- $suffix := printf "-r%d" .root.Release.Revision -}}
+{{- .root.Release.Name | trunc (int (sub 63 (len $suffix))) | trimSuffix "-" -}}{{ $suffix }}
 {{- end -}}
 
-{{/* Common labels */}}
+{{/* Labels. Pass { root, t }. */}}
 {{- define "benchmark.labels" -}}
-app.kubernetes.io/name: {{ include "benchmark.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-benchmark.target: {{ .Values.benchmark.target.label }}
+app.kubernetes.io/name: {{ .root.Chart.Name }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/managed-by: {{ .root.Release.Service }}
+benchmark.run: {{ .root.Release.Name }}
+benchmark.revision: {{ .root.Release.Revision | quote }}
+benchmark.target: {{ .t.label }}
 {{- end -}}
 
 {{/*
-inference-perf config for one test. Pass a dict: { b: <benchmark values>,
-cfg: <test config>, test: <test name> }. Rendered once per test into the
-ConfigMap so a single Job can run them sequentially.
+inference-perf config for one test against the target. Pass a dict:
+{ b: <benchmark values>, t: <target>, cfg: <test config>, test: <test name>,
+run: <run id> }. Rendered once per test into the ConfigMap so the Job can run
+them sequentially.
 */}}
 {{- define "benchmark.config" -}}
 {{- $b := .b -}}
 {{- $cfg := .cfg -}}
 {{- $test := .test -}}
+{{- $t := .t -}}
 {{- $dtype := $cfg.data.type | default "synthetic" -}}
 api:
   type: {{ $b.api.type }}
@@ -72,19 +81,46 @@ load:
       duration: {{ .duration }}
     {{- end }}
   {{- end }}
+  {{- with $cfg.stopAtSaturation }}
+  {{- if .enabled }}
+  # A request still unanswered after requestTimeoutSeconds fails; the breaker
+  # below opens when too many fail, and (it never resets) ends the run there.
+  request_timeout: {{ .requestTimeoutSeconds }}
+  circuit_breakers: ["saturation"]
+  {{- end }}
+  {{- end }}
+
+{{- with $cfg.stopAtSaturation }}
+{{- if .enabled }}
+
+# Stop at saturation: once the endpoint can't keep up, queued requests time out.
+# Open when at least errorRate of the requests finished in the last
+# windowSeconds failed (min minSamples).
+circuit_breakers:
+  - name: saturation
+    metrics:
+      matches: ["start_time"]   # every request
+      rules: ["error"]          # hit = the request failed (incl. timed out)
+    triggers:
+      - type: rate_over_window
+        window_sec: {{ .windowSeconds }}
+        threshold: {{ .errorRate }}
+        min_samples: {{ .minSamples }}
+{{- end }}
+{{- end }}
 
 server:
-  type: {{ $b.target.serverType }}
-  model_name: {{ $b.target.modelName }}
-  base_url: {{ $b.target.baseUrl }}
-  ignore_eos: {{ if hasKey $cfg "ignoreEos" }}{{ $cfg.ignoreEos }}{{ else }}{{ $b.target.ignoreEos }}{{ end }}
+  type: {{ $b.server.type }}
+  model_name: {{ $b.server.modelName }}
+  base_url: {{ $t.baseUrl }}
+  ignore_eos: {{ $cfg.ignoreEos | default false }}
 
 tokenizer:
-  pretrained_model_name_or_path: {{ $b.target.tokenizerPath }}
+  pretrained_model_name_or_path: {{ $b.server.tokenizerPath }}
 
 {{- with $b.metrics.prometheus }}
 {{- if .enabled }}
-{{- $svc := .service | default (first (splitList "." (first (splitList ":" (urlParse $b.target.baseUrl).host)))) }}
+{{- $svc := first (splitList "." (first (splitList ":" (urlParse $t.baseUrl).host))) }}
 
 # Server-side vLLM metrics for this target, queried from Prometheus.
 metrics:
@@ -108,5 +144,5 @@ report:
 storage:
   simple_storage_service:
     bucket_name: {{ $b.storage.s3.bucketName | quote }}
-    path: "{{ $b.storage.s3.pathPrefix }}/{{ $b.target.label }}/{{ $test }}/{{ randAlpha 12 }}"
+    path: "{{ $b.storage.s3.pathPrefix }}/{{ $t.label }}/{{ $test }}/{{ .run }}"
 {{- end -}}

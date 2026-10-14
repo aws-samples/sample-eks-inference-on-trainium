@@ -1,0 +1,66 @@
+# vllm-serving: deploy one vLLM endpoint, or AOT-compile it (Neuron).
+#
+#   helm install <name> vllm-serving -f <scenario>.values.yaml                  # serve
+#   helm install <name>-compile vllm-serving -f <scenario>.values.yaml \
+#     --set mode=compile                                                                # compile
+#
+# Fill the values in from the README's Step 1 table. Use the SAME values file for
+# compile and serve: both build the same vLLM engine config, which on Neuron is
+# what makes the compiled graphs (NEFFs) a cache hit at serve time.
+
+# ---- Mode ---------------------------------------------------------------------
+# serve:   Deployment + Service running `vllm serve` (OpenAI API on `port`)
+# compile: Job on the same NodePool that builds the engine with `vllm bench latency`
+#          (a short latency test, then exits) and uploads the compile cache +
+#          the latency result to s3://<s3Bucket>/<model>/cache/
+mode: serve
+
+# ---- Cluster (from terraform output) ------------------------------------------
+region: ""          # output region
+s3Bucket: ""        # output model_storage_bucket
+image: ""           # output vllm_neuron_image | vllm_gpu_image
+
+# ---- Scenario (Step 1 table) --------------------------------------------------
+model: gpt-oss-20b  # folder in S3 and under /tmp/models (= API model id /tmp/models/<model>)
+hardware: ""        # neuron | gpu
+nodepool: ""        # Karpenter NodePool, e.g. neuron-trn2-3xl, gpu-p5-4xl
+replicas: 1         # serve mode: pods behind the Service (one per accelerator)
+resources:          # per pod
+  devices: 1        # aws.amazon.com/neuron | nvidia.com/gpu
+  cpu: ""
+  memory: ""
+
+vllm:
+  tensorParallelSize: 1
+  maxModelLen: 8192
+  maxNumSeqs: 1
+  maxNumBatchedTokens: 8192
+  # Flags every scenario uses.
+  commonArgs:
+    - --enable-prefix-caching
+    - --no-disable-hybrid-kv-cache-manager
+  # Hardware-specific flags from the Step 1 table, e.g.
+  #   neuron: --hf-overrides=..., --additional-config=...
+  #   gpu:    --dtype=bfloat16
+  extraArgs: []
+
+env: {}             # extra container env (Step 1 table)
+
+port: 8080
+
+# compile mode: the short `vllm bench latency` run (must fit max-num-seqs and max-model-len)
+compile:
+  inputLen: 128
+  outputLen: 32
+  batchSize: 1
+  numItersWarmup: 1
+  numIters: 3
+
+# ---- Conventions (match terraform/) ---------------------------------------------
+serviceAccounts:
+  serve: model-reader       # S3 read-only (EKS Pod Identity)
+  compile: model-uploader   # S3 read/write
+awsCliImage: amazon/aws-cli
+paths:
+  nodeLocal: /mnt/k8s-disks/0   # accelerator nodes' NVMe instance store (RAID0)
+  models: /tmp/models           # where nodeLocal is mounted in pods

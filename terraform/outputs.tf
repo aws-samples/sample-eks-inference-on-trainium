@@ -1,42 +1,39 @@
 ################################################################################
-# Outputs
+# Outputs - the values the next steps need, e.g.
+#   export S3_BUCKET_NAME=$(terraform -chdir=terraform output -raw model_storage_bucket)
 ################################################################################
 
-output "model_storage_bucket" {
-  description = "Name of the S3 bucket holding the model cache."
-  value       = aws_s3_bucket.model_storage.bucket
+output "region" {
+  description = "AWS region the cluster runs in."
+  value       = local.region
 }
 
-output "model_storage_bucket_arn" {
-  description = "ARN of the S3 model cache bucket."
-  value       = aws_s3_bucket.model_storage.arn
-}
-
-# Output the ECR repository URL (versioned tag, encodes vLLM + Ray versions)
-output "ray_vllm_image_uri" {
-  value = "${aws_ecr_repository.ray_vllm.repository_url}:${local.ray_vllm_image_tag}"
-}
 output "configure_kubectl" {
   description = "Command to update the local kubeconfig for the EKS cluster."
   value       = "aws eks update-kubeconfig --region ${local.region} --name ${module.eks.cluster_name}"
 }
 
-output "vllm_neuron_image" {
-  description = "vLLM-Neuron image shared by every Neuron workload (compile Jobs, vLLM serving)."
-  value       = var.vllm_neuron_base_image
+output "model_storage_bucket" {
+  description = "S3 bucket: model weights (<model>/), Neuron compile cache (<model>/cache/), benchmark results (benchmarks/)."
+  value       = aws_s3_bucket.model_storage.bucket
 }
 
-output "serving_profiles" {
-  description = "Validated serving profiles published to the cluster (vllm-profile-<name> ConfigMaps)."
-  value       = keys(var.serving_profiles)
+output "vllm_neuron_image" {
+  description = "ECR copy of var.vllm_neuron_image (Neuron compile + serving)."
+  value       = "${aws_ecr_repository.vllm["neuron"].repository_url}:${local.vllm_image_tags["neuron"]}"
 }
 
 output "vllm_gpu_image" {
-  description = "vLLM CUDA image for GPU serving (manual vllm/ GPU deployment, gpu profiles)."
-  value       = var.vllm_gpu_image
+  description = "ECR copy of var.vllm_gpu_image (GPU serving)."
+  value       = "${aws_ecr_repository.vllm["gpu"].repository_url}:${local.vllm_image_tags["gpu"]}"
 }
 
-output "region" {
-  description = "AWS region the cluster runs in."
-  value       = local.region
+output "ray_neuron_image" {
+  description = "Ray Serve image built FROM vllm_neuron_image (optional Ray path)."
+  value       = "${aws_ecr_repository.ray["neuron"].repository_url}:${local.ray_image_tags["neuron"]}"
+}
+
+output "ray_gpu_image" {
+  description = "Ray Serve image built FROM vllm_gpu_image (optional Ray path)."
+  value       = "${aws_ecr_repository.ray["gpu"].repository_url}:${local.ray_image_tags["gpu"]}"
 }

@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ${name}
+  namespace: kube-system
+  labels:
+    app: ${name}
+spec:
+  selector:
+    matchLabels:
+      app: ${name}
+  template:
+    metadata:
+      labels:
+        app: ${name}
+    spec:
+      # Only the accelerator nodes this image runs on (label set by their NodePool).
+      nodeSelector:
+        ${node_label}: "true"
+      # Accelerator pools are tainted; tolerate every taint.
+      tolerations:
+        - operator: Exists
+      terminationGracePeriodSeconds: 0
+      containers:
+%{ for i, image in images ~}
+        - name: warmer-${i}
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c", "sleep infinity"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+%{ endfor ~}

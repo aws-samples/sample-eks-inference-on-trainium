@@ -65,4 +65,15 @@ resource "aws_s3_bucket_lifecycle_configuration" "model_storage" {
   }
 }
 
-# Outputs moved to outputs.tf for better organization
+# S3 gateway VPC endpoint: nodes in the private subnets reach S3 (weights,
+# compile cache, benchmark results) over the AWS network instead of the NAT
+# gateway - faster model pulls and no NAT data-processing charges. Gateway
+# endpoints are free; the AWS CLI picks it up automatically via the route tables.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = module.vpc.vpc_id
+  service_name      = "com.amazonaws.${local.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = concat(module.vpc.private_route_table_ids, module.vpc.public_route_table_ids)
+
+  tags = merge(local.tags, { Name = "${local.name}-s3" })
+}

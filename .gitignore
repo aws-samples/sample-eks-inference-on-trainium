@@ -28,3 +28,5 @@ terraform.rc
 
 # Local scratch / debug scripts (any dir named debug, at any depth)
 debug/
+# Python
+__pycache__/

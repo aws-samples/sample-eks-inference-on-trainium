@@ -1,0 +1,6 @@
+apiVersion: v2
+name: vllm-serving
+description: Deploy one vLLM endpoint (Deployment + Service) from a Step 1 scenario, or AOT-compile it for Neuron (mode=compile)
+type: application
+version: 0.1.0
+appVersion: "0.24.0"

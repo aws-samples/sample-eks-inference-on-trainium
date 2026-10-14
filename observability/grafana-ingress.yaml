@@ -1,0 +1,29 @@
+# Internet-facing ALB for Grafana, reachable only from one CIDR (your IP).
+# Created by the AWS Load Balancer Controller (Terraform installs it). Apply with:
+#   MY_IP=$(curl -s https://checkip.amazonaws.com)
+#   sed "s#ALLOWED_CIDR#$MY_IP/32#" observability/grafana-ingress.yaml | kubectl apply -f -
+# Delete it before `terraform destroy`: an ALB left behind blocks deleting the VPC.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # Only this CIDR may reach the ALB (its security group allows nothing else).
+    alb.ingress.kubernetes.io/inbound-cidrs: ALLOWED_CIDR
+    alb.ingress.kubernetes.io/healthcheck-path: /api/health
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kube-prometheus-stack-grafana
+                port:
+                  number: 3000

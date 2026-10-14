@@ -1,47 +1,40 @@
-{{- if .Values.benchmark.enabled }}
 {{- $root := . }}
 {{- $b := .Values.benchmark }}
+{{- if not $b.storage.s3.bucketName }}
+{{- fail "benchmark.storage.s3.bucketName is required (--set benchmark.storage.s3.bucketName=$S3_BUCKET_NAME)" }}
+{{- end }}
+{{- $t := $b.target }}
+{{- if not (and $t.label $t.baseUrl) }}
+{{- fail "benchmark.target.label and .baseUrl are required - pass an endpoint file, e.g. -f benchmark/values-trn2-48xl.yaml" }}
+{{- end }}
+{{- $ctx := dict "root" $root "t" $t }}
+# One Job per release (= per endpoint). Its tests run sequentially (runOrder),
+# so the latency test sees zero competing load.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "benchmark.fullname" $root }}
+  name: {{ include "benchmark.targetName" $ctx }}
   namespace: {{ $root.Release.Namespace }}
   labels:
-    {{- include "benchmark.labels" $root | nindent 4 }}
-    app.kubernetes.io/component: benchmark
+    {{- include "benchmark.labels" $ctx | nindent 4 }}
 spec:
   backoffLimit: {{ $b.job.backoffLimit }}
   ttlSecondsAfterFinished: {{ $b.job.ttlSecondsAfterFinished }}
   template:
     metadata:
       labels:
-        {{- include "benchmark.labels" $root | nindent 8 }}
-        app.kubernetes.io/component: benchmark
+        {{- include "benchmark.labels" $ctx | nindent 8 }}
     spec:
       restartPolicy: Never
       serviceAccountName: {{ $b.serviceAccount }}
-      {{- if $b.affinity.enabled }}
-      # Soft preference: co-locate in the same zone as the inference pods.
-      affinity:
-        podAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  {{- range $k, $v := $b.affinity.targetLabels }}
-                  {{ $k }}: {{ $v }}
-                  {{- end }}
-              topologyKey: topology.kubernetes.io/zone
+      {{- with $b.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
-      # Tolerate Neuron and Karpenter taints so the pod can land on any node.
       tolerations:
-      - key: aws.amazon.com/neuron
-        operator: Exists
-        effect: NoSchedule
-      - key: karpenter
-        operator: Exists
-        effect: NoSchedule
+        - key: karpenter
+          operator: Exists
+          effect: NoSchedule
       containers:
       - name: inference-perf
         image: {{ $b.image.repository }}:{{ $b.image.tag }}
@@ -49,27 +42,23 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
         - |
-          {{- if $b.dependencies.packages }}
-          echo "Installing dependencies..."
-          pip install --no-cache-dir \
-          {{- range $b.dependencies.packages }}
-            {{ . | quote }} \
-          {{- end }}
-            && echo "Dependencies installed"
-          {{- end }}
-          # Run each enabled test SEQUENTIALLY in the order below, so the latency
-          # test measures with zero competing load before the throughput/chat
-          # sweeps saturate the endpoint. A test is run only if its config exists.
           set -e
+          {{- if $b.dependencies.packages }}
+          pip install --no-cache-dir {{ range $b.dependencies.packages }}{{ . | quote }} {{ end }}
+          {{- end }}
+          # Store the target's cost basis next to its results (boto3 ships with
+          # inference-perf for its S3 storage).
+          python3 -c 'import boto3,sys; boto3.client("s3").upload_file("/workspace/configs/target.json", sys.argv[1], sys.argv[2])' \
+            {{ $b.storage.s3.bucketName | quote }} {{ printf "%s/%s/target.json" $b.storage.s3.pathPrefix $t.label | quote }}
           for t in {{ range $b.runOrder }}{{ . }} {{ end }}; do
             cfg="/workspace/configs/config-$t.yml"
             [ -f "$cfg" ] || continue
             echo "=========================================="
-            echo "TEST: $t   target: {{ $b.target.label }} @ {{ $b.target.baseUrl }}"
+            echo "TEST: $t   target: {{ $t.label }} @ {{ $t.baseUrl }}"
             echo "=========================================="
             inference-perf --config_file "$cfg"
           done
-          echo "All benchmark tests complete."
+          echo "All benchmark tests complete for {{ $t.label }}."
         env:
         - name: TOKENIZERS_PARALLELISM
           value: "false"
@@ -81,5 +70,4 @@ spec:
       volumes:
       - name: configs
         configMap:
-          name: {{ include "benchmark.fullname" $root }}
-{{- end }}
+          name: {{ include "benchmark.targetName" $ctx }}

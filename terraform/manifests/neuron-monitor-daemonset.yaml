@@ -48,12 +48,7 @@ spec:
           securityContext:
             privileged: true
       tolerations:
-        - key: aws.amazon.com/neuron
-          operator: Exists
-          effect: NoSchedule
-        - key: karpenter
-          operator: Exists
-          effect: NoSchedule
+        - operator: Exists
       nodeSelector:
         neuron.amazonaws.com/neuron-device: "true"
       volumes:

@@ -1,0 +1,95 @@
+{{- if eq .Values.mode "compile" }}
+{{- $dir := include "vllm-serving.modelDir" . }}
+{{- $s3 := printf "s3://%s/%s" .Values.s3Bucket .Values.model }}
+{{- $c := .Values.compile }}
+# AOT compile: build the scenario's vLLM engine on its NodePool and run a short
+# `vllm bench latency`. On Neuron, building the engine compiles every graph into
+# VLLM_CACHE_ROOT; the short run proves they execute. Then upload the cache and
+# the latency result to S3, where every serving pod with the same values pulls it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "vllm-serving.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        {{- include "vllm-serving.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Values.serviceAccounts.compile }}
+      nodeSelector:
+        karpenter.sh/nodepool: {{ .Values.nodepool }}
+      tolerations:
+        {{- include "vllm-serving.tolerations" . | nindent 8 }}
+      initContainers:
+        {{- include "vllm-serving.modelDownload" . | nindent 8 }}
+      containers:
+        # 1. Compile + latency test, then signal the uploader.
+        - name: compile
+          image: {{ .Values.image }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              vllm bench latency "$@" && touch /signal/done || { touch /signal/failed; exit 1; }
+            - vllm-bench
+            - --model={{ $dir }}
+            {{- range include "vllm-serving.engineArgs" . | fromJsonArray }}
+            - {{ . | quote }}
+            {{- end }}
+            - --input-len={{ $c.inputLen }}
+            - --output-len={{ $c.outputLen }}
+            - --batch-size={{ $c.batchSize }}
+            - --num-iters-warmup={{ $c.numItersWarmup }}
+            - --num-iters={{ $c.numIters }}
+            - --output-json=/signal/latency.json
+          resources:
+            {{- include "vllm-serving.resources" . | trim | nindent 12 }}
+          env:
+            {{- include "vllm-serving.env" . | nindent 12 }}
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+            - name: local-storage
+              mountPath: {{ .Values.paths.models }}
+            - name: signal
+              mountPath: /signal
+        # 2. Upload: sync the compile cache to S3 (only new files transfer) and
+        # store the latency result next to it.
+        - name: upload
+          image: {{ .Values.awsCliImage }}
+          command: ["/bin/bash", "-c"]
+          env:
+            - name: AWS_REGION
+              value: {{ .Values.region }}
+          args:
+            - |
+              set -euo pipefail
+              until [ -f /signal/done ] || [ -f /signal/failed ]; do sleep 10; done
+              [ -f /signal/done ] || { echo "compile failed - nothing to upload" >&2; exit 1; }
+              aws configure set s3.preferred_transfer_client crt
+              aws s3 sync "{{ $dir }}/cache/" "{{ $s3 }}/cache/"
+              aws s3 cp /signal/latency.json "{{ $s3 }}/cache/results/{{ .Release.Name }}-latency.json"
+              echo "Uploaded {{ $dir }}/cache/ to {{ $s3 }}/cache/"
+          volumeMounts:
+            - name: local-storage
+              mountPath: {{ .Values.paths.models }}
+            - name: signal
+              mountPath: /signal
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        # The node's NVMe, same as serving: a serving pod scheduled here later
+        # finds the cache locally too.
+        - name: local-storage
+          hostPath:
+            path: {{ .Values.paths.nodeLocal }}
+            type: Directory
+        - name: signal
+          emptyDir: {}
+{{- end }}

@@ -1,0 +1,16 @@
+{{- if eq .Values.mode "serve" }}
+{{ .Release.Name }}: vLLM on {{ .Values.nodepool }} ({{ .Values.replicas }} replica(s))
+
+  kubectl rollout status deploy/{{ .Release.Name }} --timeout=60m
+  kubectl logs -f deploy/{{ .Release.Name }} -c vllm
+  kubectl port-forward svc/{{ .Release.Name }} {{ .Values.port }}:{{ .Values.port }}
+
+  In-cluster URL: http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.port }}
+  Model id:       {{ include "vllm-serving.modelDir" . }}
+{{- else }}
+{{ .Release.Name }}: compile Job on {{ .Values.nodepool }}
+
+  kubectl logs -f job/{{ .Release.Name }} -c compile
+  kubectl wait --for=condition=complete job/{{ .Release.Name }} --timeout=120m
+  aws s3 ls s3://{{ .Values.s3Bucket }}/{{ .Values.model }}/cache/results/
+{{- end }}

@@ -1,95 +1,60 @@
-# Copy this file to terraform.tfvars and edit, then:  terraform apply
-#   cp example.tfvars terraform.tfvars
+# Copy to terraform.tfvars, edit, then: terraform -chdir=terraform apply
+#   cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 # (terraform.tfvars is gitignored so your values never get committed.)
-#
-# ─────────────────────────────────────────────────────────────────────────────
-# REQUIRED — set these for your account/reservation, or the deploy won't work.
-# The trn2 ML Capacity Block is account-specific and region/AZ-scoped.
-# ─────────────────────────────────────────────────────────────────────────────
+# Uncommented values are required; commented ones show their defaults (variables.tf).
 
-# AWS region. Must be where your Capacity Block lives. Supported: us-west-2,
-# us-east-2, eu-west-1.
+# name = "demo-neuron-eks"
+
+# AWS region - where your Capacity Blocks are (README: Infrastructure §2).
 region = "us-east-2"
 
-# Your ML Capacity Blocks, keyed by NodePool name. Each becomes a static NodePool
-# that keeps all node_count instances of the block running (reserved capacity,
-# pinned to the block's instance type + AZ). The vllm/ manifests select these
-# pool names: neuron-trn2-3xl (trn2.3xlarge), neuron-trn2-48xl, gpu-p5-48xl.
-# Find IDs/AZs/counts with: aws ec2 describe-capacity-reservations
-capacity_blocks = {
-  "neuron-trn2-3xl" = {
-    reservation_id = "cr-xxxxxxxxxxxxxxxxx"
-    az             = "us-east-2b"     # the reservation's AZ (must match)
-    instance_type  = "trn2.3xlarge"
-    node_count     = 1                # instances in the block
-    hardware       = "neuron"         # neuron | gpu
-    # expire_after = "Never"          # default: keep nodes until the block ends
+# ML Capacity Blocks (README: Infrastructure §2), keyed by the static NodePool to create for each.
+# Fill in from: aws ec2 describe-capacity-reservations --filters Name=state,Values=active,scheduled
+capacity_blocks_nodepools = {
+  "neuron-trn2-48xl" = {
+    reservation_id = "cr-..."
+    instance_type  = "trn2.48xlarge"
+    az             = "us-east-2b"
+    node_count     = 1
+    hardware       = "neuron"
   }
-  # "neuron-trn2-48xl" = {
+  "gpu-p5-48xl" = {
+    reservation_id = "cr-..."
+    instance_type  = "p5.48xlarge"
+    az             = "us-east-2a"
+    node_count     = 1
+    hardware       = "gpu"
+  }
+  # Single-accelerator nodes (vllm-serving/values-trn2-3xl.yaml, values-p5-4xl.yaml):
+  # "neuron-trn2-3xl" = {
   #   reservation_id = "cr-..."
+  #   instance_type  = "trn2.3xlarge"
   #   az             = "..."
-  #   instance_type  = "trn2.48xlarge"
   #   node_count     = 1
   #   hardware       = "neuron"
   # }
-  # "gpu-p5-48xl" = {
+  # "gpu-p5-4xl" = {
   #   reservation_id = "cr-..."
+  #   instance_type  = "p5.4xlarge"
   #   az             = "..."
-  #   instance_type  = "p5.48xlarge"
   #   node_count     = 1
   #   hardware       = "gpu"
   # }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# OPTIONAL — defaults in variables.tf are validated. Uncomment
-# and change only if you need to. Shown values are the current defaults.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# name               = "demo-neuron-eks"   # EKS cluster name / resource prefix
-# kubernetes_version = "1.36"
-
-# EKS-optimized AL2023 AMI names (bump when you upgrade the cluster):
-# x86_ami_name    = "amazon-eks-node-al2023-x86_64-standard-1.36-v20260903"
-# neuron_ami_name = "amazon-eks-node-al2023-x86_64-neuron-1.36-v20260903"
-# gpu_ami_name    = "amazon-eks-node-al2023-x86_64-nvidia-1.36-v20260903"
-
-# Serving stack (must be a compatible vLLM-Neuron DLC + Ray with py3.13 wheels;
-# Ray version must support the KubeRay operator version:
-# vllm_neuron_base_image = "public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04"
-# ray_version            = "2.56.1"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MODELS + VALIDATED SERVING PROFILES (platform)
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Models to stage: name -> HuggingFace checkpoint. The name is the model's folder
-# everywhere (s3://<bucket>/<name>/, /tmp/models/<name>/ on nodes, API model id).
+# Models to stage in S3 (README: Infrastructure §1): name -> HuggingFace checkpoint. The name is the
+# model's folder: s3://<bucket>/<name>/ and /tmp/models/<name>/ on nodes.
 # models = {
 #   "gpt-oss-20b" = "openai/gpt-oss-20b"
 # }
 
-# Validated serving configs users can build on (empty by default). Each becomes a
-# vllm-profile-<name> ConfigMap with its serve flags, S3 paths and image; neuron
-# profiles also get a compile Job that adds their NEFFs to s3://<bucket>/<model>/cache/,
-# so any deployment using the same config + image starts without compiling.
-# A compile Job takes the profile's devices on its NodePool for 20-40 min - add
-# profiles before users deploy on single-node Capacity Blocks. Profiles are
-# immutable: change a config under a new name.
-# serving_profiles = {
-#   "trn2-3xl-tp4-16k" = {
-#     model                  = "gpt-oss-20b"
-#     hardware               = "neuron"
-#     nodepool               = "neuron-trn2-3xl"   # a capacity_blocks key or an on-demand pool
-#     devices                = 1               # trn2.3xlarge: 1 device = 4 logical NeuronCores (LNC=2)
-#     cpu                    = "10"            # below the node's allocatable (12 vCPU)
-#     memory                 = "112Gi"         # below the node's allocatable (128 GiB)
-#     tensor_parallel_size   = 4
-#     max_model_len          = 16384
-#     max_num_seqs           = 4
-#     max_num_batched_tokens = 8192
-#     hf_overrides           = "{\"quantization_config\": {}}"
-#     additional_config      = "{\"neuron_config\":{\"num_batched_tokens_buckets\":[8192],\"num_seqs_buckets\":[4]}}"
-#   }
-# }
-# vllm_gpu_image = "vllm/vllm-openai:v0.24.0"   # GPU serving; vLLM version matches the Neuron DLC
+# Serving images (README: Infrastructure §1), copied to ECR; each is the base of a Ray Serve image.
+# vllm_neuron_image = "public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04"
+# vllm_gpu_image    = "vllm/vllm-openai:v0.24.0"
+# ray_version       = "2.56.1"
+
+# name               = "demo-neuron-eks"   # EKS cluster name / resource prefix
+# kubernetes_version = "1.36"
+# x86_ami_name    = "amazon-eks-node-al2023-x86_64-standard-1.36-v20260903"
+# neuron_ami_name = "amazon-eks-node-al2023-x86_64-neuron-1.36-v20260903"
+# gpu_ami_name    = "amazon-eks-node-al2023-x86_64-nvidia-1.36-v20260903"

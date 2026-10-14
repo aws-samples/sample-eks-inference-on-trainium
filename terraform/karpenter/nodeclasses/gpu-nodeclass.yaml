@@ -25,8 +25,9 @@ spec:
     - tags:
         karpenter.sh/discovery: "${name}"
         kubernetes.io/role/internal-elb: "1"
-  # GPU Capacity Blocks from var.capacity_blocks. Only the generated Capacity Block
-  # pools launch into them; the on-demand GPU pools are unaffected.
+  # Reservation IDs of the var.capacity_blocks_nodepools entries with hardware = gpu.
+  # Karpenter only launches into one for a NodePool on capacity-type "reserved"
+  # (the generated Capacity Block pools), so dynamic pools are unaffected.
 %{ if length(gpu_capacity_reservation_ids) > 0 ~}
   capacityReservationSelectorTerms:
 %{ for id in gpu_capacity_reservation_ids ~}

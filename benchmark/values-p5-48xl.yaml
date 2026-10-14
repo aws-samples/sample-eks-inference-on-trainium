@@ -1,0 +1,9 @@
+# Benchmark endpoint: gpt-oss-20b-p5-48xl (vllm-serving/values-p5-48xl.yaml).
+# Tests and load come from values.yaml.
+# hourlyUsd is a baseline; pass the node's actual $/hr at install time.
+benchmark:
+  target:
+    label: gpt-oss-20b-p5-48xl
+    baseUrl: http://gpt-oss-20b-p5-48xl.default.svc.cluster.local:8080
+    hourlyUsd: 60   # baseline (On-Demand us-east-2 is $55.04, AWS Price List API 2026-10-13)
+

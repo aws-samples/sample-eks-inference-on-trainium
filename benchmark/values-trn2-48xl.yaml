@@ -1,0 +1,9 @@
+# Benchmark endpoint: gpt-oss-20b-trn2-48xl (vllm-serving/values-trn2-48xl.yaml).
+# Tests and load come from values.yaml.
+# hourlyUsd is a baseline; pass the node's actual $/hr at install time.
+benchmark:
+  target:
+    label: gpt-oss-20b-trn2-48xl
+    baseUrl: http://gpt-oss-20b-trn2-48xl.default.svc.cluster.local:8080
+    hourlyUsd: 40   # trn2.48xlarge: Capacity Blocks only (no On-Demand price)
+

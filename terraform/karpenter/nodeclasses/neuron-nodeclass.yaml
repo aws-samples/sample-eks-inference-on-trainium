@@ -24,10 +24,9 @@ spec:
     - tags:
         karpenter.sh/discovery: "${name}"
         kubernetes.io/role/internal-elb: "1"
-  # Neuron Capacity Blocks from var.capacity_blocks. Karpenter only launches into
-  # a reservation when a NodePool's requirements (instance type, AZ, capacity-type
-  # reserved) match it, so this is safe to share with the trn1/inf2 pools - only
-  # the generated Capacity Block pools use it.
+  # Reservation IDs of the var.capacity_blocks_nodepools entries with hardware = neuron.
+  # Karpenter only launches into one for a NodePool on capacity-type "reserved"
+  # (the generated Capacity Block pools), so dynamic pools are unaffected.
 %{ if length(neuron_capacity_reservation_ids) > 0 ~}
   capacityReservationSelectorTerms:
 %{ for id in neuron_capacity_reservation_ids ~}
