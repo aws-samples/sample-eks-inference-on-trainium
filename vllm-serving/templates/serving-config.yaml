@@ -1,0 +1,31 @@
+{{- if eq .Values.mode "serve" }}
+{{- $dir := include "vllm-serving.modelDir" . }}
+# The endpoint's serving configuration, rendered from the same values as the
+# Deployment. The benchmark chart reads it at install time (`target.endpoint`)
+# to find the endpoint's URL and to store this config with every result.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-serving-config
+  labels:
+    {{- include "vllm-serving.labels" . | nindent 4 }}
+data:
+  serving.json: |
+    {{- dict
+      "endpoint" .Release.Name
+      "namespace" .Release.Namespace
+      "baseUrl" (printf "http://%s.%s.svc.cluster.local:%v" .Release.Name .Release.Namespace .Values.port)
+      "model" .Values.model
+      "modelId" $dir
+      "image" .Values.image
+      "hardware" .Values.hardware
+      "nodepool" .Values.nodepool
+      "replicas" .Values.replicas
+      "resources" .Values.resources
+      "vllm" .Values.vllm
+      "command" (concat (list "vllm" "serve" $dir "--host" "0.0.0.0" "--port" (toString .Values.port)) (include "vllm-serving.engineArgs" . | fromJsonArray))
+      "env" .Values.env
+      "chart" (printf "%s-%s" .Chart.Name .Chart.Version)
+      "revision" .Release.Revision
+    | toPrettyJson | nindent 4 }}
+{{- end }}

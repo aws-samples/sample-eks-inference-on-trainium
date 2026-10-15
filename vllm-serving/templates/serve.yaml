@@ -79,6 +79,7 @@ spec:
               mountPath: /dev/shm
             - name: local-storage
               mountPath: {{ .Values.paths.models }}
+            {{- include "vllm-serving.nkiCacheMount" . | nindent 12 }}
       terminationGracePeriodSeconds: 10
       volumes:
         - name: dshm

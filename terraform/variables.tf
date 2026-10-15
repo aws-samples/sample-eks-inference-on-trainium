@@ -61,6 +61,12 @@ variable "capacity_blocks_nodepools" {
   }
 }
 
+variable "existing_cache_bucket" {
+  description = "Name of an existing S3 bucket to use as the model cache (weights, compile cache, benchmark results), e.g. one from an earlier cluster. Empty: create a new bucket. An existing bucket is never modified or deleted by Terraform; keep it in var.region (the S3 gateway endpoint only covers same-region buckets) and in this account."
+  type        = string
+  default     = ""
+}
+
 variable "models" {
   description = "Models to stage, keyed by model name -> HuggingFace checkpoint. The name is the model's folder everywhere: s3://<bucket>/<name>/ (weights + cache/), /tmp/models/<name>/ on nodes (MODEL_ID and the API model id). Each gets a model-weights-<name> Job."
   type        = map(string)

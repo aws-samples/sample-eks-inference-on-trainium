@@ -1,23 +1,14 @@
 # Deploy and Benchmark GPT-OSS on Trainium and GPU
 
-A production-ready architecture on Amazon EKS that runs OpenAI's open-weight
+A blueprint architecture on Amazon EKS that deploys and benchmarks OpenAI's open-weight
 **gpt-oss-20b** on both AWS Trainium (`trn2.48xlarge`) and NVIDIA GPU
-(`p5.48xlarge`), and a pipeline that takes you from a model to measured
-inference endpoints on either one: Terraform for the compute, model cache and
-serving containers, and Helm for the Neuron compilation, the vLLM endpoints and
-the benchmark.
+(`p5.48xlarge`). This pipeline takes you from model to measured
+inference endpoints: Terraform for the compute, model cache and
+serving containers, Prometheus and Grafana for observability, and Helm for Neuron compilation, vLLM service endpoints and
+the performance benchmark jobs.
 
 Nothing is hidden or abstracted. You build the stack step by step, so you understand
-every moving part, and can automate it, or point it at another model or
-accelerator, once you know the steps:
-
-1. **Infrastructure:** VPC, EKS, Karpenter node pools from your Capacity Blocks,
-   an S3 model cache, and the serving containers in ECR.
-2. **Serving inference:** compile the model ahead of time for Neuron, then
-   deploy vLLM endpoints on Trainium and GPU.
-3. **Observability:** Neuron, GPU and vLLM metrics in Prometheus and Grafana.
-4. **Benchmark:** latency, throughput and cost tests against both endpoints at
-   once, with results in S3.
+every moving part, and can customize it and automate it.
 
 > **Important:** the Neuron inference stack is converging on the [vLLM Neuron plugin](https://github.com/vllm-project/vllm-neuron)
 > (currently **Beta**, Trn2/Trn3 only). When adopting this solution, track the
@@ -155,6 +146,10 @@ terraform -chdir=terraform apply
   | `s3://<bucket>/<model>/cache/` | `/tmp/models/<model>/cache/` | Neuron compile cache |
   | `s3://<bucket>/benchmarks/` | - | benchmark results |
 
+  Set `existing_cache_bucket` to reuse a bucket from an earlier cluster (same
+  region and account) instead of creating one. Terraform only reads it, so the
+  weights, compile cache and results survive `terraform destroy`.
+
 - **Permissions** (EKS Pod Identity): two service accounts, `model-uploader`
   (S3 read/write: the Jobs) and `model-reader` (S3 read-only: serving pods).
 - **Cache Job:** one `model-weights-<model>` Job per `models` entry. It
@@ -209,7 +204,7 @@ from it.
 | Pod resources (cpu / memory) | 22 / 220Gi | 22 / 220Gi |
 | `tensor_parallel_size` | 8 | 1 |
 | `max_model_len` | 8192 | 8192 |
-| `max_num_seqs` | 4 | 4 |
+| `max_num_seqs` | 16 | 16 |
 | `max_num_batched_tokens` | 1024 (prefill segment size) | 8192 |
 | Common flags | `--enable-prefix-caching --no-disable-hybrid-kv-cache-manager` | same |
 | Hardware-specific flags | `--hf-overrides={"quantization_config": {}}` (experts to BF16)<br>`--additional-config={"neuron_config": {"decode_context_length_buckets": [2048, 4096]}}` | `--dtype=bfloat16` |
@@ -260,11 +255,11 @@ inputs and outputs you'll actually serve, and compile for them:
 Run the chart in compile mode:
 
 ```bash
-helm install $TRN-compile vllm-serving -f vllm-serving/values-$TRN.yaml --set mode=compile \
+helm upgrade --install $TRN-compile vllm-serving -f vllm-serving/values-$TRN.yaml --set mode=compile \
   --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_NEURON_IMAGE
 
-kubectl logs -f job/$TRN-compile -c compile
-kubectl wait --for=condition=complete job/$TRN-compile --timeout=180m
+kubectl logs -f -l app.kubernetes.io/instance=$TRN-compile -c compile --tail=-1
+kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$TRN-compile --timeout=180m
 ```
 
 [`compile-job.yaml`](vllm-serving/templates/compile-job.yaml) runs a Job with
@@ -296,10 +291,10 @@ Replicas on the same node share that NVMe, so the first one pulls the model and
 the rest reuse it.
 
 ```bash
-helm install gpt-oss-20b-$TRN vllm-serving -f vllm-serving/values-$TRN.yaml \
+helm upgrade --install gpt-oss-20b-$TRN vllm-serving -f vllm-serving/values-$TRN.yaml \
   --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_NEURON_IMAGE
 
-helm install gpt-oss-20b-$GPU vllm-serving -f vllm-serving/values-$GPU.yaml \
+helm upgrade --install gpt-oss-20b-$GPU vllm-serving -f vllm-serving/values-$GPU.yaml \
   --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_GPU_IMAGE
 
 kubectl rollout status deploy/gpt-oss-20b-$TRN --timeout=60m
@@ -465,7 +460,7 @@ your IP changes, re-run the two commands to update the allowed CIDR.
 
 The two endpoints only compare fairly if everything except the silicon is held
 constant. Section 2 already fixed the serving side (same model, 8K context
-window, 4 sequences per replica, 8 replicas per node). The benchmark fixes the
+window, 16 sequences per replica, 8 replicas per node). The benchmark fixes the
 rest:
 
 | Held constant | How |
@@ -481,7 +476,7 @@ Three questions, answered by two tests and one derived number:
 | Test | Question | Load | Metrics |
 |---|---|---|---|
 | **chat-latency** | What's the best-case latency? | Constant 1 req/s for 60 s, far below saturation | TTFT, TPOT, request latency (p50/p95) |
-| **chat-throughput** | How much can a node serve, and where does latency bend? | A sweep: probe the endpoint, then 5 stages from 1 req/s up to its estimated saturation, 60 s each. Stops early once the endpoint is past saturation (requests time out after 120 s; the run ends when half of them fail over 30 s). | Output tokens/s, achieved req/s, TTFT and TPOT per stage |
+| **chat-throughput** | How much can a node serve, and where does latency bend? | Fixed stages, the same for every endpoint: 2 → 4 → 8 → 16 → 32 req/s (total across workers), 60 s each. Stops early once the endpoint is past saturation (requests time out after 120 s; the run ends when half of them fail over 30 s). | Output tokens/s, achieved req/s, TTFT and TPOT per stage |
 | **cost/performance** | What does a token cost? | *Derived* from the peak throughput stage | Output tokens per $, $ per 1M output tokens |
 
 - **TTFT** (time to first token): queueing plus prefill, what a chat user waits for.
@@ -499,9 +494,13 @@ vLLM on Neuron and vLLM on GPU.
 The [`benchmark/`](benchmark/) Helm chart packages it. Everything shared lives in
 [`benchmark/values.yaml`](benchmark/values.yaml): the dataset, the tests and their
 load stages.
-Each endpoint has its own small file that only sets its target: a label, its
-in-cluster URL and a baseline hourly price (`hourlyUsd`; you pass your actual
-node prices at install time in step 3):
+Each endpoint has its own small file that only sets its target: the endpoint
+(its `vllm-serving` release name) and a baseline hourly price (`hourlyUsd`; you
+pass your actual node prices at install time in step 3). At install, the chart
+reads the endpoint's serving configuration from the cluster (the
+`<endpoint>-serving-config` ConfigMap that `vllm-serving` publishes) to find
+its URL, and stores that configuration with every result, so each benchmark
+carries the exact setup it measured:
 [`values-trn2-48xl.yaml`](benchmark/values-trn2-48xl.yaml) and
 [`values-p5-48xl.yaml`](benchmark/values-p5-48xl.yaml). Diff them: the target is
 all that differs, so both endpoints run the identical tests and load.
@@ -525,7 +524,7 @@ One Helm release per endpoint, each running one Job. Start both together so
 they run **in parallel** (they're on separate nodes, so they don't interfere)
 and fill in the scoreboard side by side. Inside each Job the tests run
 **sequentially**, latency first, so it measures with zero competing load before
-the sweep saturates the endpoint.
+the throughput stages saturate the endpoint.
 
 ```bash
 helm upgrade --install bench-$TRN benchmark/ -f benchmark/values-$TRN.yaml \
@@ -543,15 +542,16 @@ kubectl wait --for=condition=complete job -l app.kubernetes.io/name=benchmark --
 A run takes about 10 minutes per endpoint. Watch it live on the **Benchmark
 scoreboard** dashboard (Grafana, **Inference** folder; see Section 3 to open
 Grafana): Trainium and GPU side by side, filling in as the load ramps. To
-focus on one endpoint, **Benchmark - Trainium** and **Benchmark - GPU** show the
-same panels for a single endpoint at full width.
+focus on one endpoint, the **Benchmark** dashboard shows the same metrics for
+the endpoint you select at the top, at full width.
 
 The live latency is vLLM's server-side ITL; the final report in step 4 uses
 the client-side TPOT.
 
-Results land in `s3://<bucket>/benchmarks/<label>/`: the endpoint's cost basis
-(`target.json`), and per test the client-side reports (overall and per load
-stage) plus the endpoint's server-side vLLM metrics for the same window.
+Results land in `s3://<bucket>/benchmarks/<endpoint>/<test>/<run>/`: the
+client-side reports (overall and per load stage), the endpoint's server-side
+vLLM metrics for the same window, `serving.json` (the endpoint's serving
+configuration when it was benchmarked) and `target.json` (URL and $/hr).
 
 ```bash
 aws s3 ls s3://$S3_BUCKET_NAME/benchmarks/ --recursive | grep summary
@@ -575,17 +575,20 @@ benchmark/visualize.py --bucket $S3_BUCKET_NAME \
   --targets gpt-oss-20b-$TRN gpt-oss-20b-$GPU
 ```
 
-1. **Latency at 1 req/s:** TTFT, TPOT and request latency, p50 and p95.
-2. **Throughput sweep:** one table per endpoint, one row per load stage: requested
+1. **Serving config:** each endpoint's image, node pool, replicas x TP and vLLM
+   parameters from its `serving.json`, with a check that the model,
+   `max_model_len`, `max_num_seqs` and common flags are the same for all.
+2. **Throughput stages:** one table per endpoint, one row per load stage: requested
    vs achieved req/s, output tokens/s, TTFT and TPOT. Where achieved stops
    keeping up with requested, or TTFT climbs, is where the endpoint saturates.
-3. **Cost/performance:** the peak error-free stage's output tokens/s against the
+3. **Latency at 1 req/s:** TTFT, TPOT and request latency, p50 and p95.
+4. **Cost/performance:** the peak error-free stage's output tokens/s against the
    node's $/hr, as output tokens per $ and $ per 1M output tokens.
 
 Read the numbers with the setup in mind. Both endpoints serve the same
 checkpoint, but Trainium2 runs the MoE experts in BF16 while H100 keeps them in
-MXFP4. Both are configured for 4 sequences per replica, which favors latency
-over peak throughput. Raise `max_num_seqs` on both to measure a
+MXFP4. Both are configured for 16 sequences per replica. Lower `max_num_seqs`
+on both for a latency-oriented setup, or raise it to measure a
 throughput-oriented setup.
 
 ## Section 5: Teardown

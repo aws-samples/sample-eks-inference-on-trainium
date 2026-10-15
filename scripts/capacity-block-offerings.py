@@ -8,7 +8,7 @@ instance type) and prints one table sorted by start date. Buy one with:
 
 Usage:
   scripts/capacity-block-offerings.py \\
-    --instance-types trn2.48xlarge p5.48xlarge \\
+    [--instance-types trn2.48xlarge p5.48xlarge] \\
     [--regions us-east-2 us-west-2] \\
     [--count 1] [--hours 24] [--start 2026-10-20] [--end 2026-10-27] [-v]
 
@@ -30,6 +30,12 @@ from concurrent.futures import ThreadPoolExecutor
 # As of 2026-10-13: trn2.48xlarge is only offered in us-east-2; p5.48xlarge in
 # ap-northeast-1, ap-south-1, ap-southeast-2, eu-north-1, eu-west-2, sa-east-1,
 # us-east-1, us-east-2, us-west-1, us-west-2.
+# All Trainium2 and P5 sizes (--instance-types overrides).
+DEFAULT_INSTANCE_TYPES = [
+    "trn2.3xlarge", "trn2.48xlarge", "trn2u.48xlarge",
+    "p5.4xlarge", "p5.48xlarge", "p5e.48xlarge", "p5en.48xlarge",
+]
+
 DEFAULT_REGIONS = [
     "ap-northeast-1", "ap-northeast-2", "ap-south-1", "ap-southeast-2", "ap-southeast-4",
     "eu-north-1", "eu-west-2", "eu-west-3", "sa-east-1",
@@ -73,7 +79,8 @@ def print_table(header: list[str], rows: list[list[str]], right: set[int] = froz
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--instance-types", nargs="+", required=True, metavar="TYPE")
+    ap.add_argument("--instance-types", nargs="+", default=DEFAULT_INSTANCE_TYPES, metavar="TYPE",
+                    help="default: DEFAULT_INSTANCE_TYPES (all trn2 and p5 sizes)")
     ap.add_argument("--regions", nargs="+", default=DEFAULT_REGIONS, metavar="REGION",
                     help="default: DEFAULT_REGIONS (Capacity Blocks-enabled regions)")
     ap.add_argument("--count", type=int, default=1, help="instances per block (default 1)")

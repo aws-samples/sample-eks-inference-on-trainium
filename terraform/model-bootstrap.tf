@@ -30,7 +30,7 @@ resource "aws_iam_policy" "model_uploader_s3" {
           "s3:ListBucket",
           "s3:GetBucketLocation"
         ]
-        Resource = aws_s3_bucket.model_storage.arn
+        Resource = local.s3_bucket_arn
       },
       {
         Effect = "Allow"
@@ -41,7 +41,7 @@ resource "aws_iam_policy" "model_uploader_s3" {
           "s3:AbortMultipartUpload",
           "s3:ListMultipartUploadParts"
         ]
-        Resource = "${aws_s3_bucket.model_storage.arn}/*"
+        Resource = "${local.s3_bucket_arn}/*"
       }
     ]
   })
@@ -88,12 +88,12 @@ resource "aws_iam_policy" "model_reader_s3" {
           "s3:ListBucket",
           "s3:GetBucketLocation"
         ]
-        Resource = aws_s3_bucket.model_storage.arn
+        Resource = local.s3_bucket_arn
       },
       {
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
-        Resource = "${aws_s3_bucket.model_storage.arn}/*"
+        Resource = "${local.s3_bucket_arn}/*"
       }
     ]
   })
@@ -169,7 +169,8 @@ resource "kubectl_manifest" "job_model_weights_s3" {
     module.karpenter,
     module.model_uploader_pod_identity,
     kubectl_manifest.model_uploader_sa,
-    aws_s3_bucket.model_storage
+    aws_s3_bucket.model_storage,
+    data.aws_s3_bucket.existing_cache
   ]
 }
 

@@ -1,11 +1,11 @@
-# Benchmark endpoint: gpt-oss-20b-p5-4xl (vllm-serving/values-p5-4xl.yaml).
-# Tests and load come from values.yaml (load overridden below for a single-replica node).
+# Benchmark endpoint: the gpt-oss-20b-p5-4xl vllm-serving release (vllm-serving/values-p5-4xl.yaml); its URL
+# and serving config are read from the cluster at install.
+# Tests and load are defined below (stop-at-saturation comes from values.yaml).
 # hourlyUsd is a baseline; pass the node's actual $/hr at install time.
 benchmark:
   target:
-    label: gpt-oss-20b-p5-4xl
-    baseUrl: http://gpt-oss-20b-p5-4xl.default.svc.cluster.local:8080
-    hourlyUsd: 6.88   # On-Demand, us-east-2 (AWS Price List API, 2026-10-14)
+    endpoint: gpt-oss-20b-p5-4xl
+    hourlyUsd: 5.97   # On-Demand, us-east-2 (AWS Price List API, 2026-10-14)
 
   # One replica saturates far below the 48xl defaults (a trn2.3xlarge measured
   # ~45 output tok/s, ~0.2 req/s on ShareGPT), so small nodes get fixed, lower
@@ -18,7 +18,7 @@ benchmark:
         type: constant
         numWorkers: 2
         stages:
-          - { rate: 0.05, duration: 300 }
+          - { rate: 0.05, duration: 60 }
 
     chat-throughput:
       description: "Latency vs load into saturation on real ShareGPT prompts (fixed stages)"
@@ -31,3 +31,6 @@ benchmark:
           - { rate: 0.5, duration: 30 }
           - { rate: 1.0, duration: 30 }
           - { rate: 2.0, duration: 30 }
+          - { rate: 4.0, duration: 30 }
+          - { rate: 8.0, duration: 30 }
+          - { rate: 16.0, duration: 30 }

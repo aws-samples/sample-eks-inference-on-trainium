@@ -1,0 +1,987 @@
+{
+  "title": "Benchmark",
+  "uid": "benchmark",
+  "editable": true,
+  "schemaVersion": 39,
+  "refresh": "5s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "graphTooltip": 1,
+  "tags": [
+    "benchmark",
+    "vllm",
+    "inference"
+  ],
+  "description": "One endpoint (Trainium or GPU) while the benchmark runs. Pick the endpoint and set its node $/hr at the top.",
+  "templating": {
+    "list": [
+      {
+        "name": "endpoint",
+        "label": "Endpoint",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus-1s"
+        },
+        "refresh": 2,
+        "current": {},
+        "multi": false,
+        "includeAll": false,
+        "query": {
+          "query": "label_values(vllm:num_requests_running, service)",
+          "refId": "endpoint"
+        },
+        "definition": "label_values(vllm:num_requests_running, service)"
+      },
+      {
+        "name": "usd_hr",
+        "label": "Node $/hr",
+        "type": "textbox",
+        "query": "40",
+        "current": {
+          "text": "40",
+          "value": "40"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Now",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": [],
+      "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "TTFT p50",
+      "description": "Time to first token (queueing + prefill), median over the last minute.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "-"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "refId": "A"
+        }
+      ],
+      "id": 2
+    },
+    {
+      "type": "stat",
+      "title": "ITL p50",
+      "description": "Inter-token latency (decode step time), median over the last minute.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 3,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "-"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:inter_token_latency_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "refId": "A"
+        }
+      ],
+      "id": 3
+    },
+    {
+      "type": "stat",
+      "title": "Output tok/s",
+      "description": "Generated tokens per second, all replicas, 1-minute rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 6,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "-",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:generation_tokens_total{service=\"$endpoint\"}[1m]))",
+          "refId": "A"
+        }
+      ],
+      "id": 4
+    },
+    {
+      "type": "stat",
+      "title": "Total tok/s",
+      "description": "Prompt + generated tokens per second, all replicas, 1-minute rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 9,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "-",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:generation_tokens_total{service=\"$endpoint\"}[1m])) + sum(rate(vllm:prompt_tokens_total{service=\"$endpoint\"}[1m]))",
+          "refId": "A"
+        }
+      ],
+      "id": 5
+    },
+    {
+      "type": "stat",
+      "title": "Running",
+      "description": "Requests being decoded now (cap = replicas x max_num_seqs).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "-",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(vllm:num_requests_running{service=\"$endpoint\"})",
+          "refId": "A"
+        }
+      ],
+      "id": 6
+    },
+    {
+      "type": "stat",
+      "title": "Waiting",
+      "description": "Requests queued because every replica is at max_num_seqs. Above 0 and growing = past saturation.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 15,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "-",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(vllm:num_requests_waiting{service=\"$endpoint\"})",
+          "refId": "A"
+        }
+      ],
+      "id": 7
+    },
+    {
+      "type": "stat",
+      "title": "Req/s",
+      "description": "Completed requests per second, 1-minute rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 18,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "-",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:request_success_total{service=\"$endpoint\"}[1m]))",
+          "refId": "A"
+        }
+      ],
+      "id": 8
+    },
+    {
+      "type": "stat",
+      "title": "$ / 1M out tokens @ peak",
+      "description": "Node $/hr divided by the peak sustained (1-minute) output tokens per hour in the selected time range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "-",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "$usd_hr * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$endpoint\"}[1m])))[$__range:15s]))",
+          "refId": "A"
+        }
+      ],
+      "id": 9
+    },
+    {
+      "type": "row",
+      "title": "Latency",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "panels": [],
+      "id": 10
+    },
+    {
+      "type": "timeseries",
+      "title": "TTFT",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:time_to_first_token_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ],
+      "id": 11
+    },
+    {
+      "type": "timeseries",
+      "title": "ITL",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:inter_token_latency_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:inter_token_latency_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        }
+      ],
+      "id": 12
+    },
+    {
+      "type": "timeseries",
+      "title": "Prefill vs decode time per request",
+      "description": "Time each request spends in prefill (prompt, up to the first token) vs decode (the remaining tokens).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:request_prefill_time_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "legendFormat": "prefill p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(vllm:request_decode_time_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "legendFormat": "decode p50",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_prefill_time_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "legendFormat": "prefill p95",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(vllm:request_decode_time_seconds_bucket{service=\"$endpoint\"}[1m])))",
+          "legendFormat": "decode p95",
+          "refId": "D"
+        }
+      ],
+      "id": 13
+    },
+    {
+      "type": "row",
+      "title": "Throughput and load",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "panels": [],
+      "id": 14
+    },
+    {
+      "type": "timeseries",
+      "title": "Tokens / s",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 14
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:generation_tokens_total{service=\"$endpoint\"}[1m]))",
+          "legendFormat": "output",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:generation_tokens_total{service=\"$endpoint\"}[1m])) + sum(rate(vllm:prompt_tokens_total{service=\"$endpoint\"}[1m]))",
+          "legendFormat": "total (prompt + output)",
+          "refId": "B"
+        }
+      ],
+      "id": 15
+    },
+    {
+      "type": "timeseries",
+      "title": "Running vs waiting",
+      "description": "Running hits its cap (replicas x max_num_seqs), then requests queue: that's saturation.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 14
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(vllm:num_requests_running{service=\"$endpoint\"})",
+          "legendFormat": "running",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(vllm:num_requests_waiting{service=\"$endpoint\"})",
+          "legendFormat": "waiting",
+          "refId": "B"
+        }
+      ],
+      "id": 16
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests / s",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 14
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:request_success_total{service=\"$endpoint\"}[1m]))",
+          "legendFormat": "completed",
+          "refId": "A"
+        }
+      ],
+      "id": 17
+    },
+    {
+      "type": "row",
+      "title": "Why: engine and hardware",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "panels": [],
+      "id": 18
+    },
+    {
+      "type": "timeseries",
+      "title": "Accelerator utilization",
+      "description": "Busy time of the accelerators on the node hosting the selected endpoint. Both queries are filtered to that node, so only the matching one draws: NeuronCore (neuron-monitor, summed per core across Neuron runtimes, averaged over cores) or GPU (DCGM, averaged over GPUs).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "clamp_max(avg((sum by (pod, neuroncore) (neuroncore_utilization_ratio) * on (pod) group_left (node) max by (pod, node) (kube_pod_info{namespace=\"monitoring\"})) and on (node) max by (node) (kube_pod_info{namespace=\"default\", pod=~\"$endpoint-[a-z0-9]+-[a-z0-9]+\"})), 1)",
+          "legendFormat": "NeuronCore",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "avg(DCGM_FI_DEV_GPU_UTIL and on (Hostname) label_replace(max by (node) (kube_pod_info{namespace=\"default\", pod=~\"$endpoint-[a-z0-9]+-[a-z0-9]+\"}), \"Hostname\", \"$1\", \"node\", \"(.*)\")) / 100",
+          "legendFormat": "GPU",
+          "refId": "B"
+        }
+      ],
+      "id": 19
+    },
+    {
+      "type": "timeseries",
+      "title": "KV cache usage",
+      "description": "Share of the KV cache in use. vLLM reserves most accelerator memory for it at startup.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "avg(vllm:kv_cache_usage_perc{service=\"$endpoint\"})",
+          "legendFormat": "avg replica",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "max(vllm:kv_cache_usage_perc{service=\"$endpoint\"})",
+          "legendFormat": "max replica",
+          "refId": "B"
+        }
+      ],
+      "id": 20
+    },
+    {
+      "type": "timeseries",
+      "title": "Prefill share of request time",
+      "description": "Share of request time spent in prefill (5-minute window). Low = decode-bound: batching, not prompt length, limits throughput.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:request_prefill_time_seconds_sum{service=\"$endpoint\"}[5m])) / (sum(rate(vllm:request_prefill_time_seconds_sum{service=\"$endpoint\"}[5m])) + sum(rate(vllm:request_decode_time_seconds_sum{service=\"$endpoint\"}[5m])))",
+          "legendFormat": "prefill share",
+          "refId": "A"
+        }
+      ],
+      "id": 21
+    }
+  ]
+}

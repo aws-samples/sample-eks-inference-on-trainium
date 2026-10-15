@@ -89,7 +89,8 @@ build the same engine config - and on Neuron, the same NEFF cache keys.
 
 {{/*
 Init container: wait for the model-weights-<model> Job's ready marker, then pull
-the model dir (weights + compile cache/) from S3 to the node's NVMe. sync (CRT)
+the model dir (weights + compile cache/, minus the non-portable NKI kernel cache)
+from S3 to the node's NVMe. sync (CRT)
 is incremental: a warm node transfers nothing. Replicas on the same node share
 the NVMe, so the sync holds a file lock (the image has python3 but no flock).
 */}}
@@ -111,8 +112,11 @@ the NVMe, so the sync holds a file lock (the image has python3 but no flock).
       aws configure set s3.preferred_transfer_client crt
       python3 -c 'import fcntl,subprocess,sys; f=open(sys.argv[1],"w"); fcntl.flock(f,fcntl.LOCK_EX); sys.exit(subprocess.call(sys.argv[2:]))' \
         {{ .Values.paths.models }}/.{{ .Values.model }}.sync.lock \
-        aws s3 sync "{{ $s3 }}/" "{{ $dir }}/" --exclude ".ready/*"
+        aws s3 sync "{{ $s3 }}/" "{{ $dir }}/" --exclude ".ready/*" --exclude "cache/neuron/compile_cache/nki/*"
       mkdir -p "{{ $dir }}/cache"
+      # The NKI kernel cache (cache/neuron/compile_cache/nki/) is node-local and
+      # never synced: its entries point at kernel binaries in
+      # /var/tmp/nki-intermediate-cache, mounted from this same NVMe below.
       # Runs as root; vLLM may not (the Ray images run as `ray`) and writes lock
       # files / new graphs into the cache.
       chmod -R a+rwX "{{ $dir }}"
@@ -120,5 +124,17 @@ the NVMe, so the sync holds a file lock (the image has python3 but no flock).
   volumeMounts:
     - name: local-storage
       mountPath: {{ .Values.paths.models }}
+    {{- include "vllm-serving.nkiCacheMount" . | nindent 4 }}
+{{- end -}}
+
+{{/*
+NKI kernel binaries, kept on the node's NVMe so the NKI cache entries in
+VLLM_CACHE_ROOT stay valid across pods on the same node. Mount it in every
+container that runs vLLM, and in the model-download init container.
+*/}}
+{{- define "vllm-serving.nkiCacheMount" -}}
+- name: local-storage
+  mountPath: /var/tmp/nki-intermediate-cache
+  subPath: .nki-intermediate-cache
 {{- end -}}
 

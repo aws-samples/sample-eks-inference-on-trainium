@@ -15,7 +15,7 @@ output "configure_kubectl" {
 
 output "model_storage_bucket" {
   description = "S3 bucket: model weights (<model>/), Neuron compile cache (<model>/cache/), benchmark results (benchmarks/)."
-  value       = aws_s3_bucket.model_storage.bucket
+  value       = local.s3_bucket_name
 }
 
 output "vllm_neuron_image" {

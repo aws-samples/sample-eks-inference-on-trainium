@@ -21,14 +21,19 @@ benchmark:
     ttlSecondsAfterFinished: 86400
 
   # ---- Endpoint under test (set by the endpoint file) ----------------------------
-  # label     : results path segment (use the endpoint's Helm release name,
-  #             e.g. gpt-oss-20b-trn2-48xl).
-  # baseUrl   : in-cluster URL of the endpoint (vllm-serving Service, port 8080).
+  # endpoint  : a vllm-serving release name (e.g. gpt-oss-20b-trn2-48xl). Its URL
+  #             and serving configuration are read from the cluster at install
+  #             (<endpoint>-serving-config ConfigMap); the config is stored with
+  #             every result, so each benchmark carries what it measured.
+  # baseUrl   : instead of endpoint, any OpenAI-compatible URL (needs label;
+  #             no serving config is recorded).
+  # label     : results path segment (default: endpoint).
   # hourlyUsd : the node's $/hr (Capacity Block or On-Demand price) for the
-  #             cost/performance metric. Stored with the results.
+  #             cost/performance metric.
   target:
-    label: ""
+    endpoint: ""
     baseUrl: ""
+    label: ""
     hourlyUsd: 0
 
   # ---- Shared by every endpoint -------------------------------------------------
@@ -103,7 +108,7 @@ benchmark:
     # Throughput: inference-perf first probes the endpoint (a burst of
     # numRequests over 5 s, measuring how fast it drains), estimates the
     # saturation rate, then runs numStages stages from 1 req/s up to it.
-    # Sized for 8 replicas x max_num_seqs 4 = 32 sequences in flight per node:
+    # Sized for 8 replicas x max_num_seqs 16 = 128 sequences in flight per node:
     # ~2 min probe + 5 x 60 s stages.
     chat-throughput:
       enabled: true

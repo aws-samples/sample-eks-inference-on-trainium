@@ -26,3 +26,6 @@ spec:
         kubernetes.io/role/internal-elb: "1"
   tags:
     karpenter.sh/discovery: "${name}"
+    # Exempt from the account's SpringClean auto-stop/delete sweep (see eks.tf).
+    auto-stop: "no"
+    auto-delete: "no"

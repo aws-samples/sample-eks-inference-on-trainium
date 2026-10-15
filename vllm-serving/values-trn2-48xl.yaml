@@ -18,7 +18,7 @@ vllm:
     - '--hf-overrides={"quantization_config": {}}'
     # Decode graphs per context length (plus the max_model_len fallback), so
     # short conversations don't decode against an 8K-padded KV cache.
-    - '--additional-config={"neuron_config": {"decode_context_length_buckets": [2048, 4096]}}'
+    - '--additional-config={"neuron_config": {"decode_context_length_buckets": [512, 1024, 2048, 4096]}}'
 env:
   VLLM_NEURON_COMPILATION_TIMEOUT: "1200"
   VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1200"

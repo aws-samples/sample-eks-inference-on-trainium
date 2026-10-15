@@ -2,13 +2,15 @@
 r"""Summarize inference-perf benchmark results from S3, endpoints side by side.
 
 For each target label it reads the latest run under s3://<bucket>/benchmarks/<label>/:
-  target.json                                  cost basis (hourlyUsd from the Helm values)
+  <test>/<run>/target.json     URL + cost basis (hourlyUsd from the Helm values)
+  <test>/<run>/serving.json    the endpoint's serving config when it was benchmarked
   chat-latency/<run>/summary_lifecycle_metrics.json
   chat-throughput/<run>/stage_<n>_lifecycle_metrics.json
 
 and prints:
+  0. Serving config per target, flagging settings that differ between targets
   1. Latency at 1 req/s: TTFT, TPOT and request latency (client-side, p50/p95)
-  2. Throughput sweep: per load stage, achieved rate, output tokens/s, TTFT and
+  2. Throughput stages: per load stage, achieved rate, output tokens/s, TTFT and
      TPOT - where latency bends is where the endpoint saturates
   3. Cost/performance at the peak stage: output tokens per $, $ per 1M output tokens
 
@@ -77,6 +79,23 @@ def print_table(title: str, header: list[str], rows: list[list[str]]) -> None:
         print(fmt(r))
 
 
+def serving_row(label: str, serving: dict) -> tuple[list[str], dict]:
+    """Table row + the comparable settings of one target's serving.json."""
+    if not serving or serving.get("available") is False:
+        return [label, "config unknown (not a vllm-serving endpoint)"] + [""] * 7, {}
+    v = serving.get("vllm", {})
+    extra = " ".join(a.split("=")[0] for a in v.get("extraArgs", []))
+    row = [
+        label, serving.get("image", "").rsplit("/", 1)[-1], serving.get("nodepool", ""),
+        f"{serving.get('replicas')} x TP{v.get('tensorParallelSize')}",
+        str(serving.get("resources", {}).get("devices", "")), str(v.get("maxModelLen", "")),
+        str(v.get("maxNumSeqs", "")), str(v.get("maxNumBatchedTokens", "")), extra,
+    ]
+    held = {"model": serving.get("model"), "max_model_len": v.get("maxModelLen"), "max_num_seqs": v.get("maxNumSeqs"),
+            "common flags": tuple(v.get("commonArgs", []))}
+    return row, held
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bucket", required=True, help="S3 results bucket name")
@@ -91,13 +110,22 @@ def main() -> int:
     global _REGION
     _REGION = resolve_region(args.bucket)
 
-    latency_rows, verdict_rows = [], []
+    serving_rows, held_by_target, latency_rows, verdict_rows, stage_tables = [], {}, [], [], []
     for label in args.targets:
-        target = s3_json(args.bucket, f"benchmarks/{label}/target.json") or {}
+        lat = latest_run(args.bucket, label, "chat-latency")
+        thr = latest_run(args.bucket, label, "chat-throughput")
+        run = thr or lat
+        # Context stored with the run (older runs: target.json at the label root).
+        target = (s3_json(args.bucket, run["target.json"]) if "target.json" in run else None) \
+            or s3_json(args.bucket, f"benchmarks/{label}/target.json") or {}
+        serving = s3_json(args.bucket, run["serving.json"]) if "serving.json" in run else {}
+        row, held = serving_row(label, serving or {})
+        serving_rows.append(row)
+        if held:
+            held_by_target[label] = held
         usd = float(overrides.get(label, target.get("hourlyUsd") or 0))
 
         # 1. Latency at 1 req/s
-        lat = latest_run(args.bucket, label, "chat-latency")
         s = (s3_json(args.bucket, lat["summary_lifecycle_metrics.json"]) or {}).get("successes") if lat else None
         l = s["latency"] if s else {}
         latency_rows.append([
@@ -107,8 +135,7 @@ def main() -> int:
             ms(l.get("request_latency"), "median"),
         ])
 
-        # 2. Throughput sweep, stage by stage
-        thr = latest_run(args.bucket, label, "chat-throughput")
+        # 2. Throughput stages, stage by stage
         stages = sorted(
             (int(re.search(r"stage_(\d+)_", f).group(1)), s3_json(args.bucket, k))
             for f, k in thr.items() if re.match(r"stage_\d+_lifecycle_metrics\.json", f)
@@ -128,11 +155,7 @@ def main() -> int:
             ])
             if fails == 0 and (peak is None or tps > peak[1]):
                 peak = (n, tps)
-        if rows:
-            print_table(f"THROUGHPUT SWEEP - {label}  (ShareGPT, load ramped to saturation)",
-                        ["stage", "req/s asked", "req/s got", "out tok/s", "TTFT p50", "TTFT p95", "TPOT p50", "errors"], rows)
-        else:
-            print(f"\nTHROUGHPUT SWEEP - {label}: no results under s3://{args.bucket}/benchmarks/{label}/chat-throughput/")
+        stage_tables.append((label, rows))
 
         # 3. Cost/performance at the peak error-free stage
         peak_txt = f"{peak[1]:.0f} (stage {peak[0]})" if peak else "-"
@@ -141,6 +164,22 @@ def main() -> int:
             verdict_rows.append([label, peak_txt, f"{usd:.2f}", f"{tokens_per_usd:,.0f}", f"{1e6 / tokens_per_usd:.2f}"])
         else:
             verdict_rows.append([label, peak_txt, f"{usd:.2f}" if usd > 0 else "-", "-", "-"])
+
+    print_table("SERVING CONFIG  (from each run's serving.json)",
+                ["target", "image", "node pool", "replicas", "devices/replica", "max_model_len", "max_num_seqs",
+                 "max_num_batched_tokens", "extra flags"], serving_rows)
+    differs = [k for k in ("model", "max_model_len", "max_num_seqs", "common flags")
+               if len({repr(h.get(k)) for h in held_by_target.values()}) > 1]
+    if len(held_by_target) > 1:
+        print("  Held constant: " + ("all of model, max_model_len, max_num_seqs, common flags" if not differs
+                                    else "NO - differs: " + ", ".join(differs)))
+
+    for label, rows in stage_tables:
+        if rows:
+            print_table(f"THROUGHPUT STAGES - {label}  (ShareGPT, load stepped into saturation)",
+                        ["stage", "req/s asked", "req/s got", "out tok/s", "TTFT p50", "TTFT p95", "TPOT p50", "errors"], rows)
+        else:
+            print(f"\nTHROUGHPUT STAGES - {label}: no results under s3://{args.bucket}/benchmarks/{label}/chat-throughput/")
 
     print_table("LATENCY at 1 req/s  (ShareGPT, zero contention; client-side, ms)",
                 ["target", "TTFT p50", "TTFT p95", "TPOT p50", "TPOT p95", "request p50"], latency_rows)

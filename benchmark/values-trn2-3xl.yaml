@@ -1,11 +1,11 @@
-# Benchmark endpoint: gpt-oss-20b-trn2-3xl (vllm-serving/values-trn2-3xl.yaml).
-# Tests and load come from values.yaml (load overridden below for a single-replica node).
+# Benchmark endpoint: the gpt-oss-20b-trn2-3xl vllm-serving release (vllm-serving/values-trn2-3xl.yaml); its URL
+# and serving config are read from the cluster at install.
+# Tests and load are defined below (stop-at-saturation comes from values.yaml).
 # hourlyUsd is a baseline; pass the node's actual $/hr at install time.
 benchmark:
   target:
-    label: gpt-oss-20b-trn2-3xl
-    baseUrl: http://gpt-oss-20b-trn2-3xl.default.svc.cluster.local:8080
-    hourlyUsd: 2.24   # trn2.3xlarge: your Capacity Block price
+    endpoint: gpt-oss-20b-trn2-3xl
+    hourlyUsd: 2.25   # trn2.3xlarge: your Capacity Block price
 
   # One replica saturates far below the 48xl defaults (a trn2.3xlarge measured
   # ~45 output tok/s, ~0.2 req/s on ShareGPT), so small nodes get fixed, lower
@@ -18,7 +18,7 @@ benchmark:
         type: constant
         numWorkers: 2
         stages:
-          - { rate: 0.05, duration: 300 }
+          - { rate: 0.05, duration: 60 }
 
     chat-throughput:
       description: "Latency vs load into saturation on real ShareGPT prompts (fixed stages)"
@@ -27,7 +27,7 @@ benchmark:
         numWorkers: 4
         sweep: null
         stages:
-          - { rate: 0.25, duration: 30 }
-          - { rate: 0.5, duration: 30 }
-          - { rate: 1.0, duration: 30 }
-          - { rate: 2.0, duration: 30 }
+          - { rate: 0.25, duration: 120 }
+          - { rate: 0.5, duration: 120 }
+          - { rate: 1.0, duration: 120 }
+          - { rate: 2.0, duration: 120 }

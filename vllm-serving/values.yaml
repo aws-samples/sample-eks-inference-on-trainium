@@ -55,6 +55,8 @@ compile:
   batchSize: 1
   numItersWarmup: 1
   numIters: 3
+  # Keep each finished compile Job (and its pod's logs) this long: 4 h.
+  jobTtlSeconds: 14400
 
 # ---- Conventions (match terraform/) ---------------------------------------------
 serviceAccounts:

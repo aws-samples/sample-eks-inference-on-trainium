@@ -85,7 +85,22 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "## AWS Trainium2\n`$trn2` \u00b7 node **$${trn2_usd_hr}/hr**"
+        "content": "## AWS Trainium2\n`$trn2` · node **$${trn2_usd_hr}/hr**"
+      }
+    },
+    {
+      "type": "text",
+      "id": 11,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "## NVIDIA H100\n`$gpu` · node **$${gpu_usd_hr}/hr**"
       }
     },
     {
@@ -235,8 +250,57 @@
     },
     {
       "type": "stat",
+      "title": "Requests / s",
+      "description": "Completed requests per second across all replicas, 1-minute rate.",
+      "id": 27,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 7,
+        "y": 2
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "noValue": "-",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:request_success_total{service=\"$trn2\"}[1m]))",
+          "refId": "A",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "type": "stat",
       "title": "Running requests",
-      "description": "Requests being decoded now (cap = replicas x max_num_seqs = 32). Anything above waits.",
+      "description": "Requests being decoded now (cap = replicas x max_num_seqs: 128 on a 48xl node, 16 on a single-accelerator node). Anything above waits.",
       "id": 5,
       "datasource": {
         "type": "prometheus",
@@ -281,317 +345,6 @@
           "instant": false
         }
       ]
-    },
-    {
-      "type": "stat",
-      "title": "Waiting requests",
-      "description": "Requests queued because every replica is at max_num_seqs. Above 0 and growing = past saturation.",
-      "id": 6,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-1s"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 0,
-        "y": 6
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "orange"
-          },
-          "noValue": "-",
-          "decimals": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "sum(vllm:num_requests_waiting{service=\"$trn2\"})",
-          "refId": "A",
-          "instant": false
-        }
-      ]
-    },
-    {
-      "type": "stat",
-      "title": "Peak output tok/s",
-      "description": "Highest 1-minute output rate in the selected time range: sustained capacity.",
-      "id": 7,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-1s"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 4,
-        "y": 6
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "orange"
-          },
-          "noValue": "-",
-          "decimals": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[1m])))[$__range:15s])",
-          "refId": "A",
-          "instant": false
-        }
-      ]
-    },
-    {
-      "type": "stat",
-      "title": "$ / 1M out tokens - at peak",
-      "description": "Cost at peak sustained throughput: the live preview of the visualize.py verdict.",
-      "id": 8,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-1s"
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 8,
-        "y": 6
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "orange"
-          },
-          "noValue": "-",
-          "decimals": 2
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "$trn2_usd_hr * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[1m])))[$__range:15s]))",
-          "refId": "A",
-          "instant": false
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Load: running vs waiting",
-      "description": "Running requests hit their cap, then requests queue: that's saturation.",
-      "id": 9,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-1s"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 6,
-        "x": 0,
-        "y": 10
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "sum(vllm:num_requests_running{service=\"$trn2\"})",
-          "legendFormat": "running",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "sum(vllm:num_requests_waiting{service=\"$trn2\"})",
-          "legendFormat": "waiting",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Output tokens / s",
-      "description": "Output tokens per second across all replicas, 1-minute rate.",
-      "id": 21,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-1s"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 6,
-        "x": 6,
-        "y": 10
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[1m]))",
-          "legendFormat": "output tok/s",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Accelerator utilization",
-      "description": "NeuronCore utilization averaged over the node's cores. neuron-monitor reports one series per Neuron runtime (one per TP worker), so series are summed per core before averaging.",
-      "id": 10,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-1s"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 6,
-        "x": 0,
-        "y": 24
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10
-          },
-          "max": 1,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "avg(sum by (instance_id, neuroncore) (neuroncore_utilization_ratio))",
-          "legendFormat": "utilization",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "text",
-      "id": 11,
-      "title": "",
-      "gridPos": {
-        "h": 2,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "options": {
-        "mode": "markdown",
-        "content": "## NVIDIA H100\n`$gpu` \u00b7 node **$${gpu_usd_hr}/hr**"
-      }
     },
     {
       "type": "stat",
@@ -740,8 +493,57 @@
     },
     {
       "type": "stat",
+      "title": "Requests / s",
+      "description": "Completed requests per second across all replicas, 1-minute rate.",
+      "id": 29,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 19,
+        "y": 2
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "noValue": "-",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:request_success_total{service=\"$gpu\"}[1m]))",
+          "refId": "A",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "type": "stat",
       "title": "Running requests",
-      "description": "Requests being decoded now (cap = replicas x max_num_seqs = 32). Anything above waits.",
+      "description": "Requests being decoded now (cap = replicas x max_num_seqs: 128 on a 48xl node, 16 on a single-accelerator node). Anything above waits.",
       "id": 15,
       "datasource": {
         "type": "prometheus",
@@ -782,6 +584,153 @@
             "uid": "prometheus-1s"
           },
           "expr": "sum(vllm:num_requests_running{service=\"$gpu\"})",
+          "refId": "A",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Waiting requests",
+      "description": "Requests queued because every replica is at max_num_seqs. Above 0 and growing = past saturation.",
+      "id": 6,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "noValue": "-",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(vllm:num_requests_waiting{service=\"$trn2\"})",
+          "refId": "A",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Peak output tok/s",
+      "description": "Highest 1-minute output rate in the selected time range: sustained capacity.",
+      "id": 7,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "noValue": "-",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[1m])))[$__range:15s])",
+          "refId": "A",
+          "instant": false
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "$ / 1M out tokens - at peak",
+      "description": "Cost at peak sustained throughput: the live preview of the visualize.py verdict.",
+      "id": 8,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "noValue": "-",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "$trn2_usd_hr * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[1m])))[$__range:15s]))",
           "refId": "A",
           "instant": false
         }
@@ -936,155 +885,6 @@
     },
     {
       "type": "timeseries",
-      "title": "Load: running vs waiting",
-      "description": "Running requests hit their cap, then requests queue: that's saturation.",
-      "id": 19,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-1s"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 6,
-        "x": 12,
-        "y": 10
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "sum(vllm:num_requests_running{service=\"$gpu\"})",
-          "legendFormat": "running",
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "sum(vllm:num_requests_waiting{service=\"$gpu\"})",
-          "legendFormat": "waiting",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Output tokens / s",
-      "description": "Output tokens per second across all replicas, 1-minute rate.",
-      "id": 22,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-1s"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 6,
-        "x": 18,
-        "y": 10
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "sum(rate(vllm:generation_tokens_total{service=\"$gpu\"}[1m]))",
-          "legendFormat": "output tok/s",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Accelerator utilization",
-      "description": "Average GPU utilization across the GPU nodes (DCGM).",
-      "id": 20,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-1s"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 6,
-        "x": 12,
-        "y": 24
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10
-          },
-          "max": 1,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus-1s"
-          },
-          "expr": "avg(DCGM_FI_DEV_GPU_UTIL) / 100",
-          "legendFormat": "utilization",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
       "title": "TTFT over time",
       "description": "Time to first token (queueing + prefill), p50 and p95 over 1-minute windows.",
       "id": 23,
@@ -1096,7 +896,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 17
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -1151,7 +951,7 @@
         "h": 7,
         "w": 6,
         "x": 6,
-        "y": 17
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -1206,7 +1006,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 17
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -1261,7 +1061,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 17
+        "y": 10
       },
       "fieldConfig": {
         "defaults": {
@@ -1304,41 +1104,38 @@
       ]
     },
     {
-      "type": "stat",
-      "title": "Requests / s",
-      "description": "Completed requests per second across all replicas, 1-minute rate.",
-      "id": 27,
+      "type": "timeseries",
+      "title": "Load: running vs waiting",
+      "description": "Running requests hit their cap, then requests queue: that's saturation.",
+      "id": 9,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-1s"
       },
       "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 7,
-        "y": 2
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 17
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "orange"
-          },
-          "noValue": "-",
-          "decimals": 2
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
+        "tooltip": {
+          "mode": "multi"
+        }
       },
       "targets": [
         {
@@ -1346,9 +1143,213 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "sum(rate(vllm:request_success_total{service=\"$trn2\"}[1m]))",
-          "refId": "A",
-          "instant": false
+          "expr": "sum(vllm:num_requests_running{service=\"$trn2\"})",
+          "legendFormat": "running",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(vllm:num_requests_waiting{service=\"$trn2\"})",
+          "legendFormat": "waiting",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Output tokens / s",
+      "description": "Output tokens per second across all replicas, 1-minute rate.",
+      "id": 21,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 17
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[1m]))",
+          "legendFormat": "output tok/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Load: running vs waiting",
+      "description": "Running requests hit their cap, then requests queue: that's saturation.",
+      "id": 19,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 17
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(vllm:num_requests_running{service=\"$gpu\"})",
+          "legendFormat": "running",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(vllm:num_requests_waiting{service=\"$gpu\"})",
+          "legendFormat": "waiting",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Output tokens / s",
+      "description": "Output tokens per second across all replicas, 1-minute rate.",
+      "id": 22,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 17
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "sum(rate(vllm:generation_tokens_total{service=\"$gpu\"}[1m]))",
+          "legendFormat": "output tok/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Accelerator utilization",
+      "description": "NeuronCore utilization averaged over the node's cores. neuron-monitor reports one series per Neuron runtime (one per TP worker), so series are summed per core before averaging.",
+      "id": 10,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus-1s"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "avg(sum by (instance_id, neuroncore) (neuroncore_utilization_ratio))",
+          "legendFormat": "utilization",
+          "refId": "A"
         }
       ]
     },
@@ -1410,41 +1411,40 @@
       ]
     },
     {
-      "type": "stat",
-      "title": "Requests / s",
-      "description": "Completed requests per second across all replicas, 1-minute rate.",
-      "id": 29,
+      "type": "timeseries",
+      "title": "Accelerator utilization",
+      "description": "Average GPU utilization across the GPU nodes (DCGM).",
+      "id": 20,
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-1s"
       },
       "gridPos": {
-        "h": 4,
-        "w": 3,
-        "x": 19,
-        "y": 2
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 24
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "green"
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
           },
-          "noValue": "-",
-          "decimals": 2
+          "max": 1,
+          "min": 0
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         },
-        "colorMode": "background",
-        "graphMode": "area",
-        "textMode": "value"
+        "tooltip": {
+          "mode": "multi"
+        }
       },
       "targets": [
         {
@@ -1452,9 +1452,9 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "sum(rate(vllm:request_success_total{service=\"$gpu\"}[1m]))",
-          "refId": "A",
-          "instant": false
+          "expr": "avg(DCGM_FI_DEV_GPU_UTIL) / 100",
+          "legendFormat": "utilization",
+          "refId": "A"
         }
       ]
     },
@@ -1515,5 +1515,6 @@
         }
       ]
     }
-  ]
+  ],
+  "graphTooltip": 1
 }

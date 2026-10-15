@@ -2,18 +2,24 @@
 {{- $dir := include "vllm-serving.modelDir" . }}
 {{- $s3 := printf "s3://%s/%s" .Values.s3Bucket .Values.model }}
 {{- $c := .Values.compile }}
+{{- $job := printf "%s-r%d" .Release.Name .Release.Revision | trunc 63 | trimSuffix "-" }}
 # AOT compile: build the scenario's vLLM engine on its NodePool and run a short
 # `vllm bench latency`. On Neuron, building the engine compiles every graph into
 # VLLM_CACHE_ROOT; the short run proves they execute. Then upload the cache and
 # the latency result to S3, where every serving pod with the same values pulls it.
+# Named <release>-r<revision>: a Job's spec is immutable, so every
+# `helm upgrade --install` creates a fresh Job and Helm deletes the previous one
+# (as does `helm uninstall`, stopping it if still running). Otherwise a finished
+# Job and its pod (logs) stay for compile.jobTtlSeconds.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .Release.Name }}
+  name: {{ $job }}
   labels:
     {{- include "vllm-serving.labels" . | nindent 4 }}
 spec:
   backoffLimit: 0
+  ttlSecondsAfterFinished: {{ $c.jobTtlSeconds }}
   template:
     metadata:
       labels:
@@ -56,6 +62,7 @@ spec:
               mountPath: /dev/shm
             - name: local-storage
               mountPath: {{ .Values.paths.models }}
+            {{- include "vllm-serving.nkiCacheMount" . | nindent 12 }}
             - name: signal
               mountPath: /signal
         # 2. Upload: sync the compile cache to S3 (only new files transfer) and
@@ -72,7 +79,8 @@ spec:
               until [ -f /signal/done ] || [ -f /signal/failed ]; do sleep 10; done
               [ -f /signal/done ] || { echo "compile failed - nothing to upload" >&2; exit 1; }
               aws configure set s3.preferred_transfer_client crt
-              aws s3 sync "{{ $dir }}/cache/" "{{ $s3 }}/cache/"
+              # NEFFs only: the NKI kernel cache points at this pod's /var/tmp.
+              aws s3 sync "{{ $dir }}/cache/" "{{ $s3 }}/cache/" --exclude "neuron/compile_cache/nki/*"
               aws s3 cp /signal/latency.json "{{ $s3 }}/cache/results/{{ .Release.Name }}-latency.json"
               echo "Uploaded {{ $dir }}/cache/ to {{ $s3 }}/cache/"
           volumeMounts:

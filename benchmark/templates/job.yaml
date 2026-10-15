@@ -3,10 +3,7 @@
 {{- if not $b.storage.s3.bucketName }}
 {{- fail "benchmark.storage.s3.bucketName is required (--set benchmark.storage.s3.bucketName=$S3_BUCKET_NAME)" }}
 {{- end }}
-{{- $t := $b.target }}
-{{- if not (and $t.label $t.baseUrl) }}
-{{- fail "benchmark.target.label and .baseUrl are required - pass an endpoint file, e.g. -f benchmark/values-trn2-48xl.yaml" }}
-{{- end }}
+{{- $t := include "benchmark.target" . | fromJson }}
 {{- $ctx := dict "root" $root "t" $t }}
 # One Job per release (= per endpoint). Its tests run sequentially (runOrder),
 # so the latency test sees zero competing load.
@@ -46,10 +43,12 @@ spec:
           {{- if $b.dependencies.packages }}
           pip install --no-cache-dir {{ range $b.dependencies.packages }}{{ . | quote }} {{ end }}
           {{- end }}
-          # Store the target's cost basis next to its results (boto3 ships with
-          # inference-perf for its S3 storage).
-          python3 -c 'import boto3,sys; boto3.client("s3").upload_file("/workspace/configs/target.json", sys.argv[1], sys.argv[2])' \
-            {{ $b.storage.s3.bucketName | quote }} {{ printf "%s/%s/target.json" $b.storage.s3.pathPrefix $t.label | quote }}
+          # After each test, store target.json + serving.json next to its results
+          # (boto3 ships with inference-perf for its S3 storage).
+          store_context() {
+            python3 -c 'import boto3,sys; s3=boto3.client("s3"); [s3.upload_file(f"/workspace/configs/{f}", sys.argv[1], f"{sys.argv[2]}/{f}") for f in ("target.json","serving.json")]' \
+              {{ $b.storage.s3.bucketName | quote }} "{{ $b.storage.s3.pathPrefix }}/{{ $t.label }}/$1/$(cat /workspace/configs/run-id)"
+          }
           for t in {{ range $b.runOrder }}{{ . }} {{ end }}; do
             cfg="/workspace/configs/config-$t.yml"
             [ -f "$cfg" ] || continue
@@ -57,6 +56,7 @@ spec:
             echo "TEST: $t   target: {{ $t.label }} @ {{ $t.baseUrl }}"
             echo "=========================================="
             inference-perf --config_file "$cfg"
+            store_context "$t"
           done
           echo "All benchmark tests complete for {{ $t.label }}."
         env:

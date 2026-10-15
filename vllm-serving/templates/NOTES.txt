@@ -10,7 +10,7 @@
 {{- else }}
 {{ .Release.Name }}: compile Job on {{ .Values.nodepool }}
 
-  kubectl logs -f job/{{ .Release.Name }} -c compile
-  kubectl wait --for=condition=complete job/{{ .Release.Name }} --timeout=120m
+  kubectl logs -f -l app.kubernetes.io/instance={{ .Release.Name }} -c compile --tail=-1
+  kubectl wait --for=condition=complete job -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=180m
   aws s3 ls s3://{{ .Values.s3Bucket }}/{{ .Values.model }}/cache/results/
 {{- end }}

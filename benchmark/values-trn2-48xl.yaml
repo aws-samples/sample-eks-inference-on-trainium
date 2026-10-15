@@ -1,9 +1,36 @@
-# Benchmark endpoint: gpt-oss-20b-trn2-48xl (vllm-serving/values-trn2-48xl.yaml).
-# Tests and load come from values.yaml.
+# Benchmark endpoint: the gpt-oss-20b-trn2-48xl vllm-serving release (vllm-serving/values-trn2-48xl.yaml); its URL
+# and serving config are read from the cluster at install.
+# Tests and load are defined below (stop-at-saturation comes from values.yaml).
 # hourlyUsd is a baseline; pass the node's actual $/hr at install time.
 benchmark:
   target:
-    label: gpt-oss-20b-trn2-48xl
-    baseUrl: http://gpt-oss-20b-trn2-48xl.default.svc.cluster.local:8080
+    endpoint: gpt-oss-20b-trn2-48xl
     hourlyUsd: 40   # trn2.48xlarge: Capacity Blocks only (no On-Demand price)
 
+
+  # The two tests, identical for trn2.48xlarge and p5.48xlarge (sized for
+  # 8 replicas x max_num_seqs 16 = 128 sequences in flight per node).
+  tests:
+    chat-latency:
+      description: "Best-case TTFT / TPOT on real ShareGPT prompts (1 req/s)"
+      load:
+        type: constant
+        numWorkers: 4
+        stages:
+          - { rate: 1, duration: 60 }
+
+    # Fixed stages, identical for both endpoints (a sweep would derive different
+    # stages from each endpoint's own probe). 8x the single-replica stages for
+    # 8 replicas; the rate is the total across workers.
+    chat-throughput:
+      description: "Latency vs load into saturation on real ShareGPT prompts (fixed stages)"
+      load:
+        type: constant
+        numWorkers: 4
+        sweep: null
+        stages:
+          - { rate: 2, duration: 60 }
+          - { rate: 4, duration: 60 }
+          - { rate: 8, duration: 60 }
+          - { rate: 16, duration: 60 }
+          - { rate: 32, duration: 60 }

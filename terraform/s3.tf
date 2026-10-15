@@ -1,8 +1,19 @@
 ################################################################################
 # S3 Bucket for Model Storage
+#
+# Created here unless var.existing_cache_bucket names a bucket to reuse (weights,
+# compile cache and results from an earlier cluster). An existing bucket is only
+# read via the data source: Terraform never modifies or deletes it.
 ################################################################################
 
+data "aws_s3_bucket" "existing_cache" {
+  count  = local.create_bucket ? 0 : 1
+  bucket = var.existing_cache_bucket
+}
+
 resource "aws_s3_bucket" "model_storage" {
+  count = local.create_bucket ? 1 : 0
+
   bucket        = local.s3_bucket_name
   force_destroy = true
 
@@ -16,7 +27,8 @@ resource "aws_s3_bucket" "model_storage" {
 
 # Configure bucket versioning
 resource "aws_s3_bucket_versioning" "model_storage" {
-  bucket = aws_s3_bucket.model_storage.id
+  count  = local.create_bucket ? 1 : 0
+  bucket = aws_s3_bucket.model_storage[0].id
   versioning_configuration {
     status = "Enabled"
   }
@@ -24,7 +36,8 @@ resource "aws_s3_bucket_versioning" "model_storage" {
 
 # Configure server-side encryption
 resource "aws_s3_bucket_server_side_encryption_configuration" "model_storage" {
-  bucket = aws_s3_bucket.model_storage.id
+  count  = local.create_bucket ? 1 : 0
+  bucket = aws_s3_bucket.model_storage[0].id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -36,7 +49,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "model_storage" {
 
 # Block all public access
 resource "aws_s3_bucket_public_access_block" "model_storage" {
-  bucket = aws_s3_bucket.model_storage.id
+  count  = local.create_bucket ? 1 : 0
+  bucket = aws_s3_bucket.model_storage[0].id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -46,7 +60,8 @@ resource "aws_s3_bucket_public_access_block" "model_storage" {
 
 # Configure lifecycle policy
 resource "aws_s3_bucket_lifecycle_configuration" "model_storage" {
-  bucket = aws_s3_bucket.model_storage.id
+  count  = local.create_bucket ? 1 : 0
+  bucket = aws_s3_bucket.model_storage[0].id
 
   rule {
     id     = "model_storage_lifecycle"

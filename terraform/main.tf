@@ -62,6 +62,7 @@ provider "kubectl" {
 
 
 data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
 
 data "aws_ecrpublic_authorization_token" "token" {
   provider = aws.virginia
@@ -71,9 +72,11 @@ locals {
   name   = var.name
   region = var.region
 
-  # Globally-unique bucket for model weights, the Neuron compile cache and
-  # benchmark results.
-  s3_bucket_name = "${local.name}-model-storage-${data.aws_caller_identity.current.account_id}-${var.region}"
+  # Bucket for model weights, the Neuron compile cache and benchmark results:
+  # var.existing_cache_bucket if set, else a globally-unique bucket created here.
+  create_bucket  = var.existing_cache_bucket == ""
+  s3_bucket_name = local.create_bucket ? "${local.name}-model-storage-${data.aws_caller_identity.current.account_id}-${var.region}" : var.existing_cache_bucket
+  s3_bucket_arn  = "arn:${data.aws_partition.current.partition}:s3:::${local.s3_bucket_name}"
 
   tags = {}
 }

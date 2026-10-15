@@ -13,6 +13,35 @@ deletes the previous revision's Job. Pass { root, t }.
 {{- .root.Release.Name | trunc (int (sub 63 (len $suffix))) | trimSuffix "-" -}}{{ $suffix }}
 {{- end -}}
 
+{{/*
+Resolve the endpoint under test. Returns JSON: { label, baseUrl, hourlyUsd,
+endpoint, serving }.
+  target.endpoint set: read the vllm-serving release's <endpoint>-serving-config
+    ConfigMap (Helm lookup, at install/upgrade) for its URL, and keep its
+    serving.json to store with every result.
+  target.baseUrl set instead: any OpenAI-compatible endpoint; no serving config.
+*/}}
+{{- define "benchmark.target" -}}
+{{- $t := .Values.benchmark.target -}}
+{{- $out := dict "hourlyUsd" $t.hourlyUsd "endpoint" ($t.endpoint | default "") "serving" "" -}}
+{{- if $t.endpoint -}}
+{{- $cm := lookup "v1" "ConfigMap" .Release.Namespace (printf "%s-serving-config" $t.endpoint) | default dict -}}
+{{- $serving := dig "data" "serving.json" "" $cm -}}
+{{- if not $serving -}}
+{{- fail (printf "endpoint %q not found: no ConfigMap %s-serving-config in namespace %q. Deploy it with the vllm-serving chart (release name = endpoint), or set benchmark.target.baseUrl for another endpoint. (helm template / --dry-run=client can't read the cluster.)" $t.endpoint $t.endpoint .Release.Namespace) -}}
+{{- end -}}
+{{- $_ := set $out "serving" $serving -}}
+{{- $_ := set $out "baseUrl" ($t.baseUrl | default ($serving | fromJson).baseUrl) -}}
+{{- $_ := set $out "label" ($t.label | default $t.endpoint) -}}
+{{- else if $t.baseUrl -}}
+{{- $_ := set $out "baseUrl" $t.baseUrl -}}
+{{- $_ := set $out "label" (required "benchmark.target.label is required with target.baseUrl" $t.label) -}}
+{{- else -}}
+{{- fail "set benchmark.target.endpoint (a vllm-serving release) or benchmark.target.baseUrl - e.g. -f benchmark/values-trn2-48xl.yaml" -}}
+{{- end -}}
+{{- $out | toJson -}}
+{{- end -}}
+
 {{/* Labels. Pass { root, t }. */}}
 {{- define "benchmark.labels" -}}
 app.kubernetes.io/name: {{ .root.Chart.Name }}
@@ -112,7 +141,7 @@ circuit_breakers:
 server:
   type: {{ $b.server.type }}
   model_name: {{ $b.server.modelName }}
-  base_url: {{ $t.baseUrl }}
+  base_url: {{ $t.baseUrl | toString }}
   ignore_eos: {{ $cfg.ignoreEos | default false }}
 
 tokenizer:
@@ -120,7 +149,7 @@ tokenizer:
 
 {{- with $b.metrics.prometheus }}
 {{- if .enabled }}
-{{- $svc := first (splitList "." (first (splitList ":" (urlParse $t.baseUrl).host))) }}
+{{- $svc := first (splitList "." (first (splitList ":" (urlParse (toString $t.baseUrl)).host))) }}
 
 # Server-side vLLM metrics for this target, queried from Prometheus.
 metrics:
