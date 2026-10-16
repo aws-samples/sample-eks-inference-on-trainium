@@ -1,8 +1,8 @@
 # Deploy and Benchmark GPT-OSS on Trainium and GPU
 
 A blueprint architecture on Amazon EKS that deploys and benchmarks OpenAI's open-weight
-**gpt-oss-20b** on both AWS Trainium (`trn2.48xlarge`) and NVIDIA GPU
-(`p5.48xlarge`). This pipeline takes you from model to measured
+**gpt-oss-20b** on both AWS Trainium (`trn2`) and NVIDIA GPU
+(`p5`). This pipeline takes you from model to measured
 inference endpoints: Terraform for the compute, model cache and
 serving containers, Prometheus and Grafana for observability, and Helm for Neuron compilation, vLLM service endpoints and
 the performance benchmark jobs.
@@ -30,37 +30,42 @@ Define the target model, hardware, and serving engine.
 | | AWS Trainium | NVIDIA GPU |
 |---|---|---|
 | Model (HuggingFace) | `openai/gpt-oss-20b` | `openai/gpt-oss-20b` |
-| Instance | `trn2.48xlarge` | `p5.48xlarge` |
-| Accelerators | 16 Trainium2 devices (64 logical NeuronCores) - 1,536 GiB HBM3 | 8 NVIDIA H100 - 80 GB |
-| Node pool | `neuron-trn2-48xl` | `gpu-p5-48xl` |
+| Instance | `trn2.3xlarge` | `p5.4xlarge` |
+| Accelerators | 1 Trainium2 device (4 logical NeuronCores) - 96 GiB HBM3 | 1 NVIDIA H100 - 80 GB |
+| Node pool | `neuron-trn2-3xl` | `gpu-p5-4xl` |
 | Inference engine | vLLM 0.24 + vLLM Neuron plugin (SDK 2.32) | vLLM 0.24 |
 | Serving container | `public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04` | `vllm/vllm-openai:v0.24.0` |
 
 
 **Weights and precision:** both use the same GPT-OSS-20B checkpoint. Its MoE expert weights are MXFP4; everything else (attention, embeddings, router) is BF16.
 
-- **GPU (advantage):** vLLM keeps the expert weights in MXFP4 and only expands them inside the MoE kernel, so the 4-bit weights stay compressed in HBM. gpt-oss-20b occupies a smaller footprint and the engine reads about 4x fewer expert-weight bytes per token, which is decisive on bandwidth-bound decode.
-- **Neuron (gap, then the fix):** Trainium2 has no sub-8-bit datapath, so the MXFP4 experts are dequantized to BF16 at load time. The model computes in BF16 and loses the 4-bit memory and bandwidth advantage. Trainium3 removes this gap: it supports MXFP4 natively, keeping the experts compressed and computed at 4-bit like the GPU.
+- **GPU:** vLLM keeps the expert weights in MXFP4 and only expands them inside the MoE kernel, so the 4-bit weights stay compressed in HBM. gpt-oss-20b occupies a smaller footprint and the engine reads about 4x fewer expert-weight bytes per token, which is decisive on bandwidth-bound decode.
+- **Neuron:** Trainium2 has no sub-8-bit datapath, so the MXFP4 experts are dequantized to BF16 at load time. The model computes in BF16 and loses the 4-bit memory and bandwidth advantage. Trainium3 removes this gap: it supports MXFP4 natively, keeping the experts compressed and computed at 4-bit like the GPU.
 
 ### 2. Reserve compute capacity
 
 Use [EC2 Capacity Blocks for ML](https://aws.amazon.com/ec2/capacityblocks/) to reserve `trn2` and `p5` capacity for days to weeks, which suits testing and benchmarking.
 Reserve one block per instance type, in the same region.
 
-Check which AZs offer the instance types:
+Find available blocks across regions (read-only; `-h` for options such as
+`--hours` and `--start`):
 
 ```bash
-export AWS_REGION=us-east-2
-aws ec2 describe-instance-type-offerings --location-type availability-zone \
-  --filters Name=instance-type,Values=trn2.48xlarge,p5.48xlarge --output table
+scripts/capacity-block-offerings.py --instance-types trn2.3xlarge p5.4xlarge --hours 24
 ```
 
-Once your blocks are reserved, note each one's ID, instance type, AZ and
-instance count. You need them in step 3:
+Pick a region that offers both, then buy each block with the offering ID from the
+table (this purchase is charged):
 
 ```bash
-aws ec2 describe-capacity-reservations --filters Name=state,Values=active,scheduled \
-  --query 'CapacityReservations[].[CapacityReservationId,InstanceType,AvailabilityZone,TotalInstanceCount,StartDate,EndDate]' --output table
+aws ec2 purchase-capacity-block --region <region> \
+  --capacity-block-offering-id <offering-id> --instance-platform Linux/UNIX
+```
+
+Once your blocks are reserved, list them:
+
+```bash
+scripts/capacity-blocks.py
 ```
 
 ### 3. Apply Terraform
@@ -70,23 +75,24 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 ```
 
 Edit `terraform/terraform.tfvars`: set the region and add one `capacity_blocks_nodepools`
-entry per block from step 2, keyed by its node pool name from you definitions:
+entry per block from step 2, keyed by its node pool name from you definitions. Terraform creates 
+one static-capacity nodepool per capacity block.
 
 Example:
 ```hcl
 region = "us-east-2"
 
 capacity_blocks_nodepools = {
-  "neuron-trn2-48xl" = {
+  "neuron-trn2-3xl" = {
     reservation_id = "cr-..."
-    instance_type  = "trn2.48xlarge"
+    instance_type  = "trn2.3xlarge"
     az             = "us-east-2b"
     node_count     = 1
     hardware       = "neuron"
   }
-  "gpu-p5-48xl" = {
+  "gpu-p5-4xl" = {
     reservation_id = "cr-..."
-    instance_type  = "p5.48xlarge"
+    instance_type  = "p5.4xlarge"
     az             = "us-east-2a"
     node_count     = 1
     hardware       = "gpu"
@@ -193,26 +199,27 @@ export VLLM_GPU_IMAGE="$(terraform -chdir=terraform output -raw vllm_gpu_image)"
 
 ### 1. Define serving parameters
 
-Each node runs several vLLM replicas behind one Kubernetes Service. **This table
+Each endpoint runs its vLLM replicas behind one Kubernetes Service (one replica
+per node at these instance sizes). **This table
 is the source of truth for serving:** the chart's values files below are filled in
 from it.
 
-| | trn2.48xlarge | p5.48xlarge |
+| | trn2.3xlarge | p5.4xlarge |
 |---|---|---|
-| Replicas per node | 8 | 8 |
-| Accelerators per replica | 2 Trainium2 devices (8 logical NeuronCores) | 1 H100 |
-| Pod resources (cpu / memory) | 22 / 220Gi | 22 / 220Gi |
-| `tensor_parallel_size` | 8 | 1 |
+| Replicas per node | 1 | 1 |
+| Accelerators per replica | 1 Trainium2 device (4 logical NeuronCores) | 1 H100 |
+| Pod resources (cpu / memory) | 10 / 112Gi | 12 / 200Gi |
+| `tensor_parallel_size` | 4 | 1 |
 | `max_model_len` | 8192 | 8192 |
-| `max_num_seqs` | 4 | 4 |
-| `max_num_batched_tokens` | 8192 (single-shot prefill buckets) | 8192 |
+| `max_num_seqs` | 8 | 8 |
+| `max_num_batched_tokens` | 8192 | 8192 |
 | Common flags | `--no-enable-prefix-caching --no-disable-hybrid-kv-cache-manager` | same |
-| Hardware-specific flags | `--hf-overrides={"quantization_config": {}}` (experts to BF16)<br>`--additional-config={"neuron_config": {"decode_context_length_buckets": [512, 1024, 2048, 4096]}}` | `--dtype=bfloat16` |
+| Hardware-specific flags | `--hf-overrides={"quantization_config": {}}` (experts to BF16)<br>`--additional-config={"neuron_config": {"decode_context_length_buckets": [512, 1024, 2048, 4096]}}` | - |
 | Env | `VLLM_NEURON_COMPILATION_TIMEOUT=1200`, `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1200`, `NEURON_SKIP_EFA_AFFINITY=1` | - |
 
 The chart ships one values file per column, with these values filled in:
-[`values-trn2-48xl.yaml`](vllm-serving/values-trn2-48xl.yaml) and
-[`values-p5-48xl.yaml`](vllm-serving/values-p5-48xl.yaml) (every field is
+[`values-trn2-3xl.yaml`](vllm-serving/values-trn2-3xl.yaml) and
+[`values-p5-4xl.yaml`](vllm-serving/values-p5-4xl.yaml) (every field is
 documented in the chart's [`values.yaml`](vllm-serving/values.yaml)).
 Review them against the table; the same file drives both the Neuron compile (§2)
 and the deployment (§3):
@@ -221,7 +228,7 @@ The commands in the rest of this guide name the endpoints after these two
 files. Set them once:
 
 ```bash
-export TRN=trn2-48xl GPU=p5-48xl
+export TRN=trn2-3xl GPU=p5-4xl
 cat vllm-serving/values-$TRN.yaml
 cat vllm-serving/values-$GPU.yaml
 ```
@@ -265,7 +272,7 @@ kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$TRN-com
 ```
 
 [`compile-job.yaml`](vllm-serving/templates/compile-job.yaml) runs a Job with
-one replica's resources (2 devices) on the trn2 node, in three containers:
+one replica's resources (1 device) on the trn2 node, in three containers:
 
 1. **`model-download`:** syncs `s3://<bucket>/gpt-oss-20b/` (weights + any existing
    `cache/`) to the node's NVMe.
@@ -335,10 +342,10 @@ seq 1 200 | xargs -P 16 -I{} curl -s localhost:8080/v1/chat/completions -o /dev/
 ### 4. (Optional) Deploy Ray Serve
 
 <details>
-<summary>Outdated: Ray Serve on the earlier trn2.3xlarge / p5.4xlarge setup (click to expand)</summary>
+<summary>Outdated: Ray Serve (click to expand)</summary>
 
-> **Outdated:** this section still targets the earlier trn2.3xlarge / p5.4xlarge
-> setup and hasn't been updated for the 48xl nodes. It's kept for a later update.
+> **Outdated:** this section predates the `vllm-serving` chart and its serving
+> values (it doesn't read the values files above). It's kept for a later update.
 
 The same scenarios on Ray Serve, deployed with plain manifests: a Ray head on
 the x86 pool and a worker on the accelerator pool, running
@@ -462,14 +469,14 @@ your IP changes, re-run the two commands to update the allowed CIDR.
 
 The two endpoints only compare fairly if everything except the silicon is held
 constant. Section 2 already fixed the serving side (same model, 8K context
-window, 16 sequences per replica, 8 replicas per node). The benchmark fixes the
+window, 8 sequences per replica, one replica per node). The benchmark fixes the
 rest:
 
 | Held constant | How |
 |---|---|
 | Workload | Real ShareGPT chat prompts: the first turn of each conversation, natural lengths, generation stops at EOS |
 | Prompts and order | The dataset is read in file order, so every endpoint gets the identical prompts in the identical order |
-| Load shape | The same tests and load stages for every endpoint |
+| Load shape | The same tests, and the same load stages wherever both endpoints run them |
 | Measurement | One client-side tool, same metric definitions, plus each endpoint's own vLLM metrics for the same window |
 | Cost basis | Per node: the whole node's $/hr, divided by the node's throughput |
 
@@ -477,8 +484,8 @@ Three questions, answered by two tests and one derived number:
 
 | Test | Question | Load | Metrics |
 |---|---|---|---|
-| **chat-latency** | What's the best-case latency? | Constant 1 req/s for 60 s, far below saturation | TTFT, TPOT, request latency (p50/p95) |
-| **chat-throughput** | How much can a node serve, and where does latency bend? | Fixed stages, the same for every endpoint: 2 → 4 → 8 → 16 → 32 req/s (total across workers), 60 s each. Stops early once the endpoint is past saturation (requests time out after 120 s; the run ends when half of them fail over 30 s). | Output tokens/s, achieved req/s, TTFT and TPOT per stage |
+| **chat-latency** | What's the best-case latency? | Constant 0.05 req/s for 60 s, far below saturation | TTFT, TPOT, request latency (p50/p95) |
+| **chat-throughput** | How much can a node serve, and where does latency bend? | Fixed stages (total across workers): 0.25 → 0.5 → 1 → 2 req/s on both; the p5.4xlarge continues to 16 req/s, since it saturates later. Stops early once the endpoint is past saturation (requests time out after 120 s; the run ends when half of them fail over 30 s). | Output tokens/s, achieved req/s, TTFT and TPOT per stage |
 | **cost/performance** | What does a token cost? | *Derived* from the peak throughput stage | Output tokens per $, $ per 1M output tokens |
 
 - **TTFT** (time to first token): queueing plus prefill, what a chat user waits for.
@@ -503,9 +510,9 @@ reads the endpoint's serving configuration from the cluster (the
 `<endpoint>-serving-config` ConfigMap that `vllm-serving` publishes) to find
 its URL, and stores that configuration with every result, so each benchmark
 carries the exact setup it measured:
-[`values-trn2-48xl.yaml`](benchmark/values-trn2-48xl.yaml) and
-[`values-p5-48xl.yaml`](benchmark/values-p5-48xl.yaml). Diff them: the target is
-all that differs, so both endpoints run the identical tests and load.
+[`values-trn2-3xl.yaml`](benchmark/values-trn2-3xl.yaml) and
+[`values-p5-4xl.yaml`](benchmark/values-p5-4xl.yaml). Diff them: besides the
+target, only the p5's extra, higher load stages differ.
 
 ```bash
 diff benchmark/values-$TRN.yaml benchmark/values-$GPU.yaml
@@ -589,7 +596,7 @@ benchmark/visualize.py --bucket $S3_BUCKET_NAME \
 
 Read the numbers with the setup in mind. Both endpoints serve the same
 checkpoint, but Trainium2 runs the MoE experts in BF16 while H100 keeps them in
-MXFP4. Both are configured for 16 sequences per replica. Lower `max_num_seqs`
+MXFP4. Both are configured for 8 sequences per replica. Lower `max_num_seqs`
 on both for a latency-oriented setup, or raise it to measure a
 throughput-oriented setup.
 
