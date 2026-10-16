@@ -9,15 +9,20 @@ For each target label it reads the latest run under s3://<bucket>/benchmarks/<la
 
 and prints:
   0. Serving config per target, flagging settings that differ between targets
-  1. Latency at 1 req/s: TTFT, TPOT and request latency (client-side, p50/p95)
+  1. Latency at the chat-latency load: TTFT, TPOT and request latency (client-side, p50/p95)
   2. Throughput stages: per load stage, achieved rate, output tokens/s, TTFT and
      TPOT - where latency bends is where the endpoint saturates
-  3. Cost/performance at the peak stage: output tokens per $, $ per 1M output tokens
+  3. Cost/performance before saturation: output tokens/s at the highest load
+     stage still within the latency target (error-free, achieved rate keeping
+     up with requested, TTFT p95 <= --ttft-p95-ms), as tokens per $ and $ per
+     1M output tokens. Stages past that point are excluded: their throughput
+     comes with a growing queue no user would accept.
 
 Usage:
   benchmark/visualize.py --bucket "$S3_BUCKET_NAME" \
       --targets gpt-oss-20b-trn2-48xl gpt-oss-20b-p5-48xl \
-      [--hourly-usd gpt-oss-20b-trn2-48xl=<usd/hr> ...]   # overrides target.json
+      [--hourly-usd gpt-oss-20b-trn2-48xl=<usd/hr> ...] \   # overrides target.json
+      [--ttft-p95-ms 1000]                                    # latency target
 
 Requires the AWS CLI on PATH with credentials that can read the bucket.
 """
@@ -102,6 +107,9 @@ def main() -> int:
     ap.add_argument("--targets", nargs="+", required=True, metavar="LABEL", help="benchmark target labels")
     ap.add_argument("--hourly-usd", nargs="*", default=[], metavar="LABEL=USD",
                     help="override a target's $/hr (default: hourlyUsd from its target.json)")
+    ap.add_argument("--ttft-p95-ms", type=float, default=1000,
+                    help="latency target for cost/performance: a stage counts if its TTFT p95 is at or "
+                         "below this (default: 1000 ms), it has no errors and achieved >= 90%% of requested req/s")
     args = ap.parse_args()
     if not args.bucket:
         ap.error("--bucket is empty; check that $S3_BUCKET_NAME is exported.")
@@ -140,24 +148,28 @@ def main() -> int:
             (int(re.search(r"stage_(\d+)_", f).group(1)), s3_json(args.bucket, k))
             for f, k in thr.items() if re.match(r"stage_\d+_lifecycle_metrics\.json", f)
         )
-        rows, peak = [], None
+        rows, peak, slo = [], None, args.ttft_p95_ms / 1000
         for n, st in stages:
             if not st:
                 continue
             succ, load = st["successes"], st["load_summary"]
             tps = succ["throughput"]["output_tokens_per_sec"]
             fails = st.get("failures", {}).get("count", 0)
+            ttft_p95 = (succ["latency"].get("time_to_first_token") or {}).get("p95", float("inf"))
+            keeps_up = load.get("achieved_rate", 0) >= 0.9 * load.get("requested_rate", 0)
+            within = fails == 0 and keeps_up and ttft_p95 <= slo
             rows.append([
                 str(n), f"{load.get('requested_rate', 0):.2f}", f"{load.get('achieved_rate', 0):.2f}",
                 f"{tps:.0f}", ms(succ["latency"].get("time_to_first_token"), "median"),
                 ms(succ["latency"].get("time_to_first_token"), "p95"),
                 ms(succ["latency"].get("time_per_output_token"), "median"), str(fails),
+                "yes" if within else "no",
             ])
-            if fails == 0 and (peak is None or tps > peak[1]):
+            if within and (peak is None or tps > peak[1]):
                 peak = (n, tps)
         stage_tables.append((label, rows))
 
-        # 3. Cost/performance at the peak error-free stage
+        # 3. Cost/performance at the highest stage within the latency target
         peak_txt = f"{peak[1]:.0f} (stage {peak[0]})" if peak else "-"
         if peak and usd > 0:
             tokens_per_usd = peak[1] * 3600 / usd
@@ -177,14 +189,16 @@ def main() -> int:
     for label, rows in stage_tables:
         if rows:
             print_table(f"THROUGHPUT STAGES - {label}  (ShareGPT, load stepped into saturation)",
-                        ["stage", "req/s asked", "req/s got", "out tok/s", "TTFT p50", "TTFT p95", "TPOT p50", "errors"], rows)
+                        ["stage", "req/s asked", "req/s got", "out tok/s", "TTFT p50", "TTFT p95", "TPOT p50", "errors",
+                         "within target"], rows)
         else:
             print(f"\nTHROUGHPUT STAGES - {label}: no results under s3://{args.bucket}/benchmarks/{label}/chat-throughput/")
 
-    print_table("LATENCY at 1 req/s  (ShareGPT, zero contention; client-side, ms)",
+    print_table("LATENCY at the chat-latency load  (ShareGPT, far below saturation; client-side, ms)",
                 ["target", "TTFT p50", "TTFT p95", "TPOT p50", "TPOT p95", "request p50"], latency_rows)
-    print_table("COST / PERFORMANCE at peak throughput  (hourlyUsd from the Helm values, or --hourly-usd)",
-                ["target", "peak out tok/s", "node $/hr", "out tokens per $", "$ per 1M out tokens"], verdict_rows)
+    print_table(f"COST / PERFORMANCE before saturation  (highest stage with TTFT p95 <= {args.ttft_p95_ms:.0f} ms, "
+                "no errors, achieved >= 90% of requested; hourlyUsd from the Helm values, or --hourly-usd)",
+                ["target", "out tok/s within target", "node $/hr", "out tokens per $", "$ per 1M out tokens"], verdict_rows)
     print()
     return 0
 

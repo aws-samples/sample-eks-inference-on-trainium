@@ -486,7 +486,7 @@ Three questions, answered by two tests and one derived number:
 |---|---|---|---|
 | **chat-latency** | What's the best-case latency? | Constant 0.05 req/s for 60 s, far below saturation | TTFT, TPOT, request latency (p50/p95) |
 | **chat-throughput** | How much can a node serve, and where does latency bend? | Fixed stages (total across workers): 0.25 → 0.5 → 1 → 2 req/s on both; the p5.4xlarge continues to 16 req/s, since it saturates later. Stops early once the endpoint is past saturation (requests time out after 120 s; the run ends when half of them fail over 30 s). | Output tokens/s, achieved req/s, TTFT and TPOT per stage |
-| **cost/performance** | What does a token cost? | *Derived* from the peak throughput stage | Output tokens per $, $ per 1M output tokens |
+| **cost/performance** | What does a token cost? | *Derived* from the highest stage before saturation: no errors, achieved rate keeping up, TTFT p95 ≤ 1 s | Output tokens per $, $ per 1M output tokens |
 
 - **TTFT** (time to first token): queueing plus prefill, what a chat user waits for.
 - **TPOT** (time per output token): decode speed after the first token, measured
@@ -590,9 +590,12 @@ benchmark/visualize.py --bucket $S3_BUCKET_NAME \
 2. **Throughput stages:** one table per endpoint, one row per load stage: requested
    vs achieved req/s, output tokens/s, TTFT and TPOT. Where achieved stops
    keeping up with requested, or TTFT climbs, is where the endpoint saturates.
-3. **Latency at 1 req/s:** TTFT, TPOT and request latency, p50 and p95.
-4. **Cost/performance:** the peak error-free stage's output tokens/s against the
-   node's $/hr, as output tokens per $ and $ per 1M output tokens.
+3. **Latency at the chat-latency load:** TTFT, TPOT and request latency, p50 and p95.
+4. **Cost/performance:** output tokens/s at the highest stage still within the
+   latency target (no errors, achieved >= 90% of requested req/s, TTFT p95 <= 1 s;
+   change it with `--ttft-p95-ms`) against the node's $/hr, as output tokens per $
+   and $ per 1M output tokens. Stages past saturation are excluded: their extra
+   throughput comes with a queue no user would accept.
 
 Read the numbers with the setup in mind. Both endpoints serve the same
 checkpoint, but Trainium2 runs the MoE experts in BF16 while H100 keeps them in
