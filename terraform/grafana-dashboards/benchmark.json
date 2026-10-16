@@ -871,7 +871,7 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "avg(DCGM_FI_DEV_GPU_UTIL and on (Hostname) label_replace(max by (node) (kube_pod_info{namespace=\"default\", pod=~\"$endpoint-[a-z0-9]+-[a-z0-9]+\"}), \"Hostname\", \"$1\", \"node\", \"(.*)\")) / 100",
+          "expr": "avg(DCGM_FI_DEV_GPU_UTIL and on (hostname) label_replace(max by (node) (kube_pod_info{namespace=\"default\", pod=~\"$endpoint-[a-z0-9]+-[a-z0-9]+\"}), \"hostname\", \"$1\", \"node\", \"(.*)\")) / 100",
           "legendFormat": "GPU",
           "refId": "B"
         }
