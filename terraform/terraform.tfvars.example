@@ -45,7 +45,7 @@ capacity_blocks_nodepools = {
 # Reuse an existing model-cache bucket (same region and account), e.g. one from an earlier
 # cluster, so its weights and compile cache are reused. Terraform never modifies or deletes it.
 # Empty or unset: create a new bucket.
-# existing_cache_bucket = "<name>-model-storage-<account>-<region>"
+# existing_cache_bucket = "neuron-eks-demo"
 
 # Models to stage in S3 (README: Infrastructure §1): name -> HuggingFace checkpoint. The name is the
 # model's folder: s3://<bucket>/<name>/ and /tmp/models/<name>/ on nodes.

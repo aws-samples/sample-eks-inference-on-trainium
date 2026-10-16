@@ -10,10 +10,11 @@ vllm:
   tensorParallelSize: 8
   maxModelLen: 8192
   maxNumSeqs: 4
-  # Segment size for prefill: ShareGPT prompts are mostly short (p50 ~135,
-  # p90 ~1K tokens), so a 1024 segment pads far less than 8192 while ~90%
-  # of prompts still prefill in one pass.
-  maxNumBatchedTokens: 1024
+  # = maxModelLen: single-shot prefill, one graph per power-of-2 bucket
+  # (128 ... 8192), so each prompt runs on the smallest bucket that fits.
+  # Measured on ShareGPT (trn2.3xlarge): TTFT p50 105 ms vs 402-438 ms with
+  # a 512/1024 segment, and +33% output tok/s.
+  maxNumBatchedTokens: 8192
   extraArgs:
     - '--hf-overrides={"quantization_config": {}}'
     # Decode graphs per context length (plus the max_model_len fallback), so

@@ -35,9 +35,12 @@ vllm:
   maxModelLen: 8192
   maxNumSeqs: 1
   maxNumBatchedTokens: 8192
-  # Flags every scenario uses.
+  # Flags every scenario uses. Prefix caching is off: on Neuron it requires
+  # segmented prefill, which the trn2 files replace with single-shot prefill
+  # buckets (faster in this benchmark), and it's off on GPU too so the flags
+  # stay identical. ShareGPT first turns barely repeat, so it costs no hits.
   commonArgs:
-    - --enable-prefix-caching
+    - --no-enable-prefix-caching
     - --no-disable-hybrid-kv-cache-manager
   # Hardware-specific flags from the Step 1 table, e.g.
   #   neuron: --hf-overrides=..., --additional-config=...
