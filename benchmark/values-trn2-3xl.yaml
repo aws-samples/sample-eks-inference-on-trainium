@@ -27,7 +27,10 @@ benchmark:
         numWorkers: 4
         sweep: null
         stages:
-          - { rate: 0.25, duration: 120 }
-          - { rate: 0.5, duration: 120 }
-          - { rate: 1.0, duration: 120 }
-          - { rate: 2.0, duration: 120 }
+          - { rate: 0.25, duration: 60 }
+          - { rate: 0.5, duration: 60 }
+          - { rate: 0.75, duration: 60 }
+          - { rate: 1.0, duration: 60 }
+          - { rate: 1.5, duration: 60 }
+          - { rate: 2.0, duration: 60 }
+          - { rate: 4.0, duration: 60 }

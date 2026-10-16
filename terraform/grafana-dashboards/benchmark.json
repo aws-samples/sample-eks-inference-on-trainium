@@ -765,7 +765,7 @@
     {
       "type": "timeseries",
       "title": "Requests / s",
-      "description": "",
+      "description": "completed: requests finished per second (vllm:request_success_total, all finish reasons). arriving (est.): completed + growth of running + waiting, i.e. the request rate reaching the engine, whether or not it keeps up. The gap between the two lines is the backlog building.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-1s"
@@ -784,7 +784,26 @@
             "fillOpacity": 10
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "arriving \\(est\\.\\)"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -804,6 +823,15 @@
           "expr": "sum(rate(vllm:request_success_total{service=\"$endpoint\"}[1m]))",
           "legendFormat": "completed",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "clamp_min(sum (rate(vllm:request_success_total{service=\"$endpoint\"}[1m])) + deriv((sum (vllm:num_requests_running{service=\"$endpoint\"}) + sum (vllm:num_requests_waiting{service=\"$endpoint\"}))[1m:5s]), 0)",
+          "legendFormat": "arriving (est.)",
+          "refId": "B"
         }
       ],
       "id": 17

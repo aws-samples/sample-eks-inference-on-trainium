@@ -204,10 +204,10 @@ from it.
 | Pod resources (cpu / memory) | 22 / 220Gi | 22 / 220Gi |
 | `tensor_parallel_size` | 8 | 1 |
 | `max_model_len` | 8192 | 8192 |
-| `max_num_seqs` | 16 | 16 |
-| `max_num_batched_tokens` | 1024 (prefill segment size) | 8192 |
-| Common flags | `--enable-prefix-caching --no-disable-hybrid-kv-cache-manager` | same |
-| Hardware-specific flags | `--hf-overrides={"quantization_config": {}}` (experts to BF16)<br>`--additional-config={"neuron_config": {"decode_context_length_buckets": [2048, 4096]}}` | `--dtype=bfloat16` |
+| `max_num_seqs` | 4 | 4 |
+| `max_num_batched_tokens` | 8192 (single-shot prefill buckets) | 8192 |
+| Common flags | `--no-enable-prefix-caching --no-disable-hybrid-kv-cache-manager` | same |
+| Hardware-specific flags | `--hf-overrides={"quantization_config": {}}` (experts to BF16)<br>`--additional-config={"neuron_config": {"decode_context_length_buckets": [512, 1024, 2048, 4096]}}` | `--dtype=bfloat16` |
 | Env | `VLLM_NEURON_COMPILATION_TIMEOUT=1200`, `VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1200`, `NEURON_SKIP_EFA_AFFINITY=1` | - |
 
 The chart ships one values file per column, with these values filled in:
@@ -242,15 +242,17 @@ Neuron graphs have fixed shapes, so every request is padded up to the nearest
 compiled bucket. For efficient prefill and decode, size the buckets to the
 inputs and outputs you'll actually serve, and compile for them:
 
-- **Prefill:** with `max_num_batched_tokens` below `max_model_len`, the plugin
-  enables segmented prefill: prompts run in segments of exactly
-  `max_num_batched_tokens` tokens, with a single prefill graph. ShareGPT prompts
-  (the benchmark workload) are short: median ~135 tokens, p90 ~1K. A 1024
-  segment fits about 90% of them in one pass and computes ~3x the useful
-  prefill tokens, where 8192 computes ~21x.
+- **Prefill:** with `max_num_batched_tokens` equal to `max_model_len`, the plugin
+  runs single-shot prefill with one graph per power-of-2 bucket (128 ... 8192),
+  so each prompt runs on the smallest bucket that fits. ShareGPT prompts (the
+  benchmark workload) are short, median ~135 tokens, so most run on the 128 and
+  256 graphs. The alternative, segmented prefill (`max_num_batched_tokens` below
+  `max_model_len`), has one fixed segment graph with a ~370 ms cost per segment
+  on trn2.3xlarge, and pauses decode for every segment: TTFT p50 was 4x higher
+  in our runs. It's required for prefix caching and for contexts over 16K.
 - **Decode:** by default decode compiles one graph per batch size (1, 2, 4) at
-  the full 8K context. `decode_context_length_buckets` adds graphs for 2K and 4K
-  contexts, so short conversations decode against a smaller KV cache.
+  the full 8K context. `decode_context_length_buckets` adds graphs for 512, 1K,
+  2K and 4K contexts, so short conversations decode against a smaller KV cache.
 
 Run the chart in compile mode:
 

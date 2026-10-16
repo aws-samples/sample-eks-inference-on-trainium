@@ -324,7 +324,7 @@
     {
       "type": "timeseries",
       "title": "Requests / s",
-      "description": "Completed requests per second.",
+      "description": "completed: requests finished per second (vllm:request_success_total, all finish reasons). arriving (est.): completed + growth of running + waiting, i.e. the request rate reaching the engine, whether or not it keeps up. The gap between the two lines is the backlog building.",
       "id": 8,
       "datasource": {
         "type": "prometheus",
@@ -344,7 +344,26 @@
             "fillOpacity": 0
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* arriving \\(est\\.\\)"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -362,8 +381,17 @@
             "uid": "prometheus-1s"
           },
           "expr": "sum by (service) (rate(vllm:request_success_total{service=~\"$service\"}[$__rate_interval]))",
-          "legendFormat": "{{service}}",
+          "legendFormat": "{{service}} completed",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus-1s"
+          },
+          "expr": "clamp_min(sum by (service) (rate(vllm:request_success_total{service=~\"$service\"}[1m])) + deriv((sum by (service) (vllm:num_requests_running{service=~\"$service\"}) + sum by (service) (vllm:num_requests_waiting{service=~\"$service\"}))[1m:5s]), 0)",
+          "legendFormat": "{{service}} arriving (est.)",
+          "refId": "B"
         }
       ]
     },
