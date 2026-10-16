@@ -56,7 +56,7 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(DCGM_FI_DEV_GPU_UTIL, Hostname)",
+        "definition": "label_values(DCGM_FI_DEV_GPU_UTIL, hostname)",
         "hide": 0,
         "includeAll": true,
         "label": "Node",
@@ -64,7 +64,7 @@
         "name": "node",
         "options": [],
         "query": {
-          "query": "label_values(DCGM_FI_DEV_GPU_UTIL, Hostname)",
+          "query": "label_values(DCGM_FI_DEV_GPU_UTIL, hostname)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
@@ -123,8 +123,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "DCGM_FI_DEV_GPU_UTIL{Hostname=~\"$node\"}",
-          "legendFormat": "{{Hostname}} gpu{{gpu}}",
+          "expr": "DCGM_FI_DEV_GPU_UTIL{hostname=~\"$node\"}",
+          "legendFormat": "{{hostname}} gpu{{gpu}}",
           "refId": "A"
         }
       ],
@@ -169,8 +169,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "DCGM_FI_DEV_FB_USED{Hostname=~\"$node\"}",
-          "legendFormat": "{{Hostname}} gpu{{gpu}} used",
+          "expr": "DCGM_FI_DEV_FB_USED{hostname=~\"$node\"}",
+          "legendFormat": "{{hostname}} gpu{{gpu}} used",
           "refId": "A"
         }
       ],
@@ -215,8 +215,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "DCGM_FI_DEV_GPU_TEMP{Hostname=~\"$node\"}",
-          "legendFormat": "{{Hostname}} gpu{{gpu}}",
+          "expr": "DCGM_FI_DEV_GPU_TEMP{hostname=~\"$node\"}",
+          "legendFormat": "{{hostname}} gpu{{gpu}}",
           "refId": "A"
         }
       ],
@@ -261,8 +261,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "DCGM_FI_DEV_POWER_USAGE{Hostname=~\"$node\"}",
-          "legendFormat": "{{Hostname}} gpu{{gpu}}",
+          "expr": "DCGM_FI_DEV_POWER_USAGE{hostname=~\"$node\"}",
+          "legendFormat": "{{hostname}} gpu{{gpu}}",
           "refId": "A"
         }
       ],
