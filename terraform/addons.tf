@@ -6,33 +6,9 @@ module "data_addons" {
   version = "1.33.0"
 
   oidc_provider_arn = module.eks.oidc_provider_arn
-  #---------------------------------------------------------------
-  # Neuron Add-on
-  #---------------------------------------------------------------
-  enable_aws_neuron_device_plugin = true
-
-  aws_neuron_device_plugin_helm_config = {
-    version = "0.1.0"
-    values = [
-      <<-EOT
-      # DaemonSet: tolerate every taint so it lands on all Neuron nodes.
-      tolerations:
-        - operator: Exists
-      # The chart's default nodeAffinity is a hardcoded instance-type allowlist
-      # that omits trn2 (and any newer type), so the plugin never lands there and
-      # no aws.amazon.com/neuron devices are advertised. Match the
-      # neuron.amazonaws.com/neuron-device=true label every Neuron pool sets.
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: neuron.amazonaws.com/neuron-device
-                operator: In
-                values: ["true"]
-      EOT
-    ]
-  }
+  # Neuron devices come from the Neuron DRA driver (helm_release.neuron below),
+  # not the device plugin: the two can't run on the same node.
+  enable_aws_neuron_device_plugin = false
 
   #---------------------------------------------------------------
   # NVIDIA GPU Operator (provides the GPU device plugin + DCGM exporter
@@ -98,6 +74,51 @@ module "data_addons" {
       EOT
     ]
   }
+
+  depends_on = [module.eks]
+}
+
+################################################################################
+# Neuron DRA driver (Dynamic Resource Allocation)
+################################################################################
+# Publishes every Trainium device in a ResourceSlice (DeviceClass
+# neuron.aws.com) with topology attributes, so a pod can claim N *connected*
+# devices (resource.aws.com/devicegroup<N>_id) - what tensor parallelism across
+# devices needs on trn2.48xlarge - and set the Logical NeuronCore size per claim.
+# Replaces the device plugin (aws.amazon.com/neuron): the chart skips the plugin
+# when the DRA driver is on. The vllm-serving chart creates the claims.
+resource "helm_release" "neuron" {
+  name       = "neuron"
+  repository = "oci://public.ecr.aws/neuron"
+  chart      = "neuron-helm-chart"
+  version    = "1.10.0"
+  # The release lives in kube-system; the chart creates its own neuron-dra-driver
+  # namespace for the driver (a pre-created one makes the install fail).
+  namespace = "kube-system"
+
+  values = [
+    <<-EOT
+    devicePlugin:
+      enabled: false
+    # Node problem detector: off, its Neuron health conditions aren't used here.
+    npd:
+      enabled: false
+    draDriver:
+      enabled: true
+      # Tolerate every taint (the Neuron pools also carry the karpenter taint) and
+      # match the neuron.amazonaws.com/neuron-device=true label every Neuron pool sets.
+      tolerations:
+        - operator: Exists
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: neuron.amazonaws.com/neuron-device
+                operator: In
+                values: ["true"]
+    EOT
+  ]
 
   depends_on = [module.eks]
 }

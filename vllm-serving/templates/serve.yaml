@@ -38,12 +38,16 @@ spec:
     metadata:
       labels:
         {{- include "vllm-serving.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccounts.serve }}
       nodeSelector:
         karpenter.sh/nodepool: {{ .Values.nodepool }}
       tolerations:
         {{- include "vllm-serving.tolerations" . | nindent 8 }}
+      {{- include "vllm-serving.podClaims" . | nindent 6 }}
       initContainers:
         {{- include "vllm-serving.modelDownload" . | nindent 8 }}
       containers:

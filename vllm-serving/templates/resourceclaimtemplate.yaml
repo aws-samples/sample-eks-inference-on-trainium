@@ -1,0 +1,47 @@
+{{- include "vllm-serving.validate" . }}
+{{- if eq .Values.hardware "neuron" }}
+{{- $n := int .Values.resources.devices }}
+{{- /* Smallest connected group the driver publishes (1/4/8/16 on trn2.48xlarge) that fits. */}}
+{{- $group := 16 }}
+{{- range $g := list 8 4 1 }}{{ if le $n $g }}{{ $group = $g }}{{ end }}{{ end }}
+# The release's Trainium2 devices, from the Neuron DRA driver. More than one:
+# all from the same connected device group (on trn2.48xlarge's 4x4 torus a group
+# of 4 is one ring of 4 devices), so tensor parallelism stays on neighbouring
+# devices - the device plugin could hand out any N devices.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: {{ include "vllm-serving.claimTemplate" . }}
+  labels:
+    {{- include "vllm-serving.labels" . | nindent 4 }}
+spec:
+  spec:
+    devices:
+      requests:
+        - name: neurons
+          exactly:
+            deviceClassName: neuron.aws.com
+            allocationMode: ExactCount
+            count: {{ $n }}
+            {{- with .Values.neuron.deviceIds }}
+            # Pinned devices (e.g. to compare neighbouring vs non-neighbouring pairs).
+            selectors:
+              - cel:
+                  expression: "device.attributes['neuron.aws.com'].deviceId in {{ toJson . }}"
+            {{- end }}
+      {{- if gt $n 1 }}
+      constraints:
+        - requests: ["neurons"]
+          matchAttribute: {{ .Values.neuron.deviceGroupAttribute | default (printf "resource.aws.com/devicegroup%d_id" $group) | quote }}
+      {{- end }}
+      {{- with .Values.neuron.lnc }}
+      config:
+        - requests: ["neurons"]
+          opaque:
+            driver: neuron.aws.com
+            parameters:
+              apiVersion: neuron.aws.com/v1
+              kind: NeuronConfig
+              logicalNeuronCore: {{ int . }}
+      {{- end }}
+{{- end }}

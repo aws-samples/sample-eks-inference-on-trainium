@@ -55,10 +55,24 @@ build the same engine config - and on Neuron, the same NEFF cache keys.
 {{/* Container env: the compile cache dir (inside the model dir) + the scenario's env. */}}
 {{- define "vllm-serving.env" -}}
 - name: VLLM_CACHE_ROOT
-  value: {{ include "vllm-serving.modelDir" . }}/cache
+  value: {{ include "vllm-serving.modelDir" . }}/{{ .Values.cacheDir }}
 {{- range $k, $v := .Values.env }}
 - name: {{ $k }}
   value: {{ $v | toString | quote }}
+{{- end }}
+{{- end -}}
+
+{{/* Name of the release's Neuron ResourceClaimTemplate. */}}
+{{- define "vllm-serving.claimTemplate" -}}
+{{ .Release.Name }}-neuron
+{{- end -}}
+
+{{/* Pod-level resourceClaims (Neuron), placed in the pod spec. */}}
+{{- define "vllm-serving.podClaims" -}}
+{{- if eq .Values.hardware "neuron" }}
+resourceClaims:
+  - name: neurons
+    resourceClaimTemplateName: {{ include "vllm-serving.claimTemplate" . }}
 {{- end }}
 {{- end -}}
 
@@ -72,7 +86,8 @@ build the same engine config - and on Neuron, the same NEFF cache keys.
   effect: NoSchedule
 {{- end -}}
 
-{{/* Serving container resources: cpu/memory + accelerators. */}}
+{{/* Serving container resources: cpu/memory + accelerators (GPU: device
+resource; Neuron: the release's DRA claim). */}}
 {{- define "vllm-serving.resources" -}}
 {{- $r := .Values.resources -}}
 {{- range $kind := list "requests" "limits" }}
@@ -83,7 +98,13 @@ build the same engine config - and on Neuron, the same NEFF cache keys.
   {{- with $r.memory }}
   memory: {{ . }}
   {{- end }}
+  {{- if ne $.Values.hardware "neuron" }}
   {{ include "vllm-serving.deviceResource" $ }}: {{ $r.devices | quote }}
+  {{- end }}
+{{- end }}
+{{- if eq .Values.hardware "neuron" }}
+claims:
+  - name: neurons
 {{- end }}
 {{- end -}}
 
@@ -112,15 +133,17 @@ the NVMe, so the sync holds a file lock (the image has python3 but no flock).
       aws configure set s3.preferred_transfer_client crt
       python3 -c 'import fcntl,subprocess,sys; f=open(sys.argv[1],"w"); fcntl.flock(f,fcntl.LOCK_EX); sys.exit(subprocess.call(sys.argv[2:]))' \
         {{ .Values.paths.models }}/.{{ .Values.model }}.sync.lock \
-        aws s3 sync "{{ $s3 }}/" "{{ $dir }}/" --exclude ".ready/*" --exclude "cache/neuron/compile_cache/nki/*"
-      mkdir -p "{{ $dir }}/cache"
-      # The NKI kernel cache (cache/neuron/compile_cache/nki/) is node-local and
+        aws s3 sync "{{ $s3 }}/" "{{ $dir }}/" --exclude ".ready/*" \
+          --exclude "cache*" --include "{{ .Values.cacheDir }}/*" --exclude "{{ .Values.cacheDir }}/neuron/compile_cache/nki/*"
+      mkdir -p "{{ $dir }}/{{ .Values.cacheDir }}"
+      # Only this release's cache dir (cacheDir) is pulled. The NKI kernel cache
+      # (<cacheDir>/neuron/compile_cache/nki/) is node-local and
       # never synced: its entries point at kernel binaries in
       # /var/tmp/nki-intermediate-cache, mounted from this same NVMe below.
       # Runs as root; vLLM may not (the Ray images run as `ray`) and writes lock
       # files / new graphs into the cache.
       chmod -R a+rwX "{{ $dir }}"
-      du -sh "{{ $dir }}" "{{ $dir }}/cache"
+      du -sh "{{ $dir }}" "{{ $dir }}/{{ .Values.cacheDir }}"
   volumeMounts:
     - name: local-storage
       mountPath: {{ .Values.paths.models }}
@@ -130,11 +153,12 @@ the NVMe, so the sync holds a file lock (the image has python3 but no flock).
 {{/*
 NKI kernel binaries, kept on the node's NVMe so the NKI cache entries in
 VLLM_CACHE_ROOT stay valid across pods on the same node. Mount it in every
-container that runs vLLM, and in the model-download init container.
+container that runs vLLM, and in the model-download init container. One per
+cacheDir, like the compile cache (kernel changes aren't part of the cache key).
 */}}
 {{- define "vllm-serving.nkiCacheMount" -}}
 - name: local-storage
   mountPath: /var/tmp/nki-intermediate-cache
-  subPath: .nki-intermediate-cache
+  subPath: .nki-intermediate-{{ .Values.cacheDir }}
 {{- end -}}
 

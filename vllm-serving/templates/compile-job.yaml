@@ -31,6 +31,7 @@ spec:
         karpenter.sh/nodepool: {{ .Values.nodepool }}
       tolerations:
         {{- include "vllm-serving.tolerations" . | nindent 8 }}
+      {{- include "vllm-serving.podClaims" . | nindent 6 }}
       initContainers:
         {{- include "vllm-serving.modelDownload" . | nindent 8 }}
       containers:
@@ -80,9 +81,9 @@ spec:
               [ -f /signal/done ] || { echo "compile failed - nothing to upload" >&2; exit 1; }
               aws configure set s3.preferred_transfer_client crt
               # NEFFs only: the NKI kernel cache points at this pod's /var/tmp.
-              aws s3 sync "{{ $dir }}/cache/" "{{ $s3 }}/cache/" --exclude "neuron/compile_cache/nki/*"
-              aws s3 cp /signal/latency.json "{{ $s3 }}/cache/results/{{ .Release.Name }}-latency.json"
-              echo "Uploaded {{ $dir }}/cache/ to {{ $s3 }}/cache/"
+              aws s3 sync "{{ $dir }}/{{ .Values.cacheDir }}/" "{{ $s3 }}/{{ .Values.cacheDir }}/" --exclude "neuron/compile_cache/nki/*"
+              aws s3 cp /signal/latency.json "{{ $s3 }}/{{ .Values.cacheDir }}/results/{{ .Release.Name }}-latency.json"
+              echo "Uploaded {{ $dir }}/{{ .Values.cacheDir }}/ to {{ $s3 }}/{{ .Values.cacheDir }}/"
           volumeMounts:
             - name: local-storage
               mountPath: {{ .Values.paths.models }}
