@@ -147,8 +147,11 @@ resource "kubectl_manifest" "karpenter" {
   wait      = true
   yaml_body = templatefile("${path.module}/karpenter/${each.value}", local.karpenter_template_vars)
 
+  # karpenter_extras too: Karpenter needs its permissions (iam:ListInstanceProfiles)
+  # to delete an EC2NodeClass, so destroy must remove these first.
   depends_on = [
-    helm_release.karpenter
+    helm_release.karpenter,
+    aws_iam_role_policy.karpenter_extras,
   ]
 }
 
