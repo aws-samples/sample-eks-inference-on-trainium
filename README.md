@@ -464,7 +464,7 @@ aws logs start-query --log-group-name /aws/eks/demo-neuron-eks/containers \
   --query-string 'fields @timestamp, log | filter kubernetes.pod_name like /gpt-oss-20b/ | sort @timestamp desc | limit 50'
 ```
 
-### 3. Visualization
+### 3. Dashboards
 
 Grafana loads every dashboard JSON under [`grafana-dashboards/`](terraform/grafana-dashboards/)
 into the **Inference** folder:
