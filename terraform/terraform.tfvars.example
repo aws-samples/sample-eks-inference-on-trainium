@@ -3,8 +3,6 @@
 # (terraform.tfvars is gitignored so your values never get committed.)
 # Uncommented values are required; commented ones show their defaults (variables.tf).
 
-# name = "demo-neuron-eks"
-
 # AWS region - where your Capacity Block is (README: Section 1, step 1).
 region = "us-east-2"
 
