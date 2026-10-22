@@ -43,10 +43,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccounts.serve }}
-      nodeSelector:
-        karpenter.sh/nodepool: {{ .Values.nodepool }}
-      tolerations:
-        {{- include "vllm-serving.tolerations" . | nindent 8 }}
+      {{- include "vllm-serving.scheduling" . | nindent 6 }}
       {{- include "vllm-serving.podClaims" . | nindent 6 }}
       initContainers:
         {{- include "vllm-serving.modelDownload" . | nindent 8 }}
@@ -64,8 +61,9 @@ spec:
               protocol: TCP
               name: http
           # Readiness only (no liveness): Ready once /health answers, i.e. after
-          # the model loads (+ compiles, on a Neuron cache miss: 20-40 min). No
-          # liveness probe, so a slow warmup never restarts the pod.
+          # the model loads (+ compiles, on a Neuron cache miss: minutes to
+          # tens of minutes). No liveness probe, so a slow warmup never
+          # restarts the pod.
           readinessProbe:
             httpGet:
               path: /health
@@ -79,18 +77,8 @@ spec:
           env:
             {{- include "vllm-serving.env" . | nindent 12 }}
           volumeMounts:
-            - name: dshm
-              mountPath: /dev/shm
-            - name: local-storage
-              mountPath: {{ .Values.paths.models }}
-            {{- include "vllm-serving.nkiCacheMount" . | nindent 12 }}
+            {{- include "vllm-serving.volumeMounts" . | nindent 12 }}
       terminationGracePeriodSeconds: 10
       volumes:
-        - name: dshm
-          emptyDir:
-            medium: Memory
-        - name: local-storage
-          hostPath:
-            path: {{ .Values.paths.nodeLocal }}
-            type: Directory
+        {{- include "vllm-serving.volumes" . | nindent 8 }}
 {{- end }}

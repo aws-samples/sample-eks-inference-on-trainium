@@ -1,11 +1,11 @@
 """Ray Serve app for vLLM on Neuron (trn2) or GPU (p5), mounted into the
-RayService pods (ray-service-trn2.yaml / ray-service-p5.yaml) from the
+RayService pods (ray-service-gpt-oss-trn2-tp4.yaml / ray-service-p5.yaml) from the
 vllm-ray-app ConfigMap.
 
-The engine is configured from env vars set in the manifest - the same Step 1
-values as the standalone vLLM deployment - and parsed by vLLM's own CLI parser,
-so on Neuron the engine config (and the NEFF cache key) match the compile Job
-and `vllm serve`.
+The engine is configured from the manifest's ENGINE_ARGS env var - the same
+engine flags the vllm-serving chart renders for the scenario - parsed by vLLM's
+own CLI parser, so on Neuron the engine config (and the NEFF cache keys) match
+the compile Job and `vllm serve`.
 
 We do NOT hand-roll the OpenAI response format. The deployment builds vLLM's own
 serving objects (OpenAIServingChat / OpenAIServingCompletion /
@@ -19,6 +19,7 @@ accelerator) to build the deployment graph, and vLLM's arg parser instantiates
 ``DeviceConfig``, which fails there. So all device-touching work (arg parsing,
 engine build, init_app_state) happens in ``__init__`` on the accelerator worker.
 """
+import json
 import logging
 import os
 from types import SimpleNamespace
@@ -53,24 +54,12 @@ app = FastAPI()
 
 
 def build_serve_args():
-    """The same engine flags `vllm serve` gets in the standalone deployment.
+    """The same engine flags `vllm serve` gets in the standalone deployment:
+    ENGINE_ARGS is the vllm-serving chart's engine-args list for the scenario
+    (JSON), so on Neuron the graphs - and the compile cache keys - are identical.
     Called only from __init__ (on the worker); make_arg_parser touches DeviceConfig.
     """
-    argv = [
-        "--model", MODEL,
-        "--tokenizer", MODEL,
-        "--served-model-name", MODEL,
-        f"--tensor-parallel-size={os.environ['TENSOR_PARALLEL_SIZE']}",
-        f"--max-model-len={os.environ['MAX_MODEL_LEN']}",
-        f"--max-num-seqs={os.environ['MAX_NUM_SEQS']}",
-        f"--max-num-batched-tokens={os.environ['MAX_NUM_BATCHED_TOKENS']}",
-        "--enable-prefix-caching",
-        "--no-disable-hybrid-kv-cache-manager",
-    ]
-    # Hardware-specific flags, only when set (Step 1 table).
-    for env, flag in [("HF_OVERRIDES", "--hf-overrides"), ("ADDITIONAL_CONFIG", "--additional-config"), ("DTYPE", "--dtype")]:
-        if os.environ.get(env):
-            argv.append(f"{flag}={os.environ[env]}")
+    argv = ["--model", MODEL, "--served-model-name", MODEL, *json.loads(os.environ["ENGINE_ARGS"])]
     return make_arg_parser(FlexibleArgumentParser()).parse_args(argv)
 
 

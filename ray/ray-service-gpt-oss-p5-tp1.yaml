@@ -1,15 +1,31 @@
 # RayService for gpt-oss-20b on one p5.4xlarge (1x H100, TP1): Ray head on the
-# x86 pool, one worker on the gpu-p5-4xl pool. The worker pulls the model dir
-# from S3 (weights; vLLM builds its CUDA graphs at startup into cache/ =
-# VLLM_CACHE_ROOT). The engine env below is the Step 1 p5.4xlarge scenario - the
-# same values as the vLLM deployment.
+# x86 pool, one worker on the gpu-p5-4xl pool. The worker claims its GPU through
+# the NVIDIA DRA driver (the ResourceClaimTemplate below) and pulls the weights
+# from S3 (vLLM builds its CUDA graphs at startup into cache/ = VLLM_CACHE_ROOT).
+# ENGINE_ARGS below are vllm-serving/values-gpt-oss-p5-tp1.yaml's engine flags, as the vllm-serving
+# chart renders them.
 #
 #   kubectl create configmap vllm-ray-app --from-file=ray/vllm_ray_app.py --dry-run=client -o yaml | kubectl apply -f -
 #   envsubst '$RAY_GPU_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-p5.yaml | kubectl apply -f -
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: gpt-oss-p5-tp1-ray-devices
+  namespace: default
+spec:
+  spec:
+    devices:
+      requests:
+        - name: devices
+          exactly:
+            deviceClassName: gpu.nvidia.com
+            allocationMode: ExactCount
+            count: 1
+---
 apiVersion: ray.io/v1
 kind: RayService
 metadata:
-  name: gpt-oss-20b-p5-4xl-ray
+  name: gpt-oss-p5-tp1-ray
   namespace: default
 spec:
   serviceUnhealthySecondThreshold: 1800
@@ -78,19 +94,9 @@ spec:
               value: "8000"
             # The Serve controller imports the app on the head to build the
             # deployment graph, so vllm_ray_app.py reads these here too. Must
-            # match the worker values.
+            # match the worker values. (The engine flags are only read on the worker.)
             - name: MODEL_ID
               value: "/tmp/models/gpt-oss-20b"
-            - name: TENSOR_PARALLEL_SIZE
-              value: "1"
-            - name: MAX_NUM_SEQS
-              value: "1"
-            - name: MAX_NUM_BATCHED_TOKENS
-              value: "8192"
-            - name: MAX_MODEL_LEN
-              value: "16384"
-            - name: DTYPE
-              value: bfloat16
             - name: NUM_GPUS
               value: "1"
             - name: RAY_memory_monitor_refresh_ms
@@ -122,7 +128,10 @@ spec:
           labels:
             ray.io/node-type: worker
         spec:
-          serviceAccountName: model-reader
+          serviceAccountName: s3-reader
+          resourceClaims:
+          - name: devices
+            resourceClaimTemplateName: gpt-oss-p5-tp1-ray-devices
           affinity:
             podAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
@@ -143,9 +152,9 @@ spec:
               - |
                 set -e
                 # sync (CRT) reconciles against S3: warm NVMe -> transfers nothing,
-                # fresh node -> full pull, partial -> just the gap. Weights + cache/.
+                # fresh node -> full pull, partial -> just the gap. Weights only.
                 aws configure set s3.preferred_transfer_client crt
-                aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b/" /tmp/models/gpt-oss-20b/ --exclude ".ready/*"
+                aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b/" /tmp/models/gpt-oss-20b/ --exclude ".ready/*" --exclude "cache*" --exclude "original/*" --exclude "metal/*"
                 # This init container runs as root, but the Ray worker runs as the
                 # non-root `ray` user, and the plugin writes NEFFs / lock files into
                 # VLLM_CACHE_ROOT (inside the model dir) - make it writable by the ray user.
@@ -177,30 +186,23 @@ spec:
             - mountPath: /dev/shm
               name: dshm
             resources:
-              # The p5.4xlarge's single H100; cpu/memory stay below the node's
-              # allocatable (16 vCPU / 256 GiB) so it schedules.
+              # The p5.4xlarge's single H100, from the DRA claim; cpu/memory stay
+              # below the node's allocatable (16 vCPU / 256 GiB) so it schedules.
               limits:
                 cpu: 12
                 memory: "200Gi"
-                nvidia.com/gpu: "1"
               requests:
                 cpu: 12
                 memory: "200Gi"
-                nvidia.com/gpu: "1"
+              claims:
+              - name: devices
             env:
-            # Model and serve configuration (must match the head).
+            # Model (must match the head) and engine flags: values-gpt-oss-p5-tp1.yaml's,
+            # as the vllm-serving chart renders them.
             - name: MODEL_ID
               value: "/tmp/models/gpt-oss-20b"
-            - name: MAX_MODEL_LEN
-              value: "16384"
-            - name: MAX_NUM_SEQS
-              value: "1"
-            - name: MAX_NUM_BATCHED_TOKENS
-              value: "8192"
-            - name: TENSOR_PARALLEL_SIZE
-              value: "1"
-            - name: DTYPE
-              value: bfloat16
+            - name: ENGINE_ARGS
+              value: '["--tokenizer", "/tmp/models/gpt-oss-20b", "--tensor-parallel-size=1", "--max-model-len=8192", "--max-num-seqs=32", "--max-num-batched-tokens=8192", "--no-enable-prefix-caching", "--no-disable-hybrid-kv-cache-manager"]'
             - name: NUM_GPUS
               value: "1" # GPUs each replica claims (TP1)
             # torch.compile cache inside the model dir.

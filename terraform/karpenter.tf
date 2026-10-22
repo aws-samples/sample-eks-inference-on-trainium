@@ -20,10 +20,12 @@ module "karpenter" {
 }
 
 # Extra IAM the submodule's controller policy does not grant:
-#   - iam:ListInstanceProfiles: Karpenter 1.14 uses it during instance-profile
+#   - iam:ListInstanceProfiles: Karpenter 1.14+ uses it during instance-profile
 #     reconciliation, without it no node launches.
 #   - ec2:DescribeCapacityReservations: required for
 #     capacityReservationSelectorTerms (ML Capacity Blocks on the trn2 pool).
+#   - ec2:DescribeInstanceStatus: Karpenter 1.15+ instance status health checks
+#     (interruption controller).
 resource "aws_iam_role_policy" "karpenter_extras" {
   name = "karpenter-extras"
   role = module.karpenter.iam_role_name
@@ -36,6 +38,7 @@ resource "aws_iam_role_policy" "karpenter_extras" {
         Action = [
           "iam:ListInstanceProfiles",
           "ec2:DescribeCapacityReservations",
+          "ec2:DescribeInstanceStatus",
         ]
         Resource = "*"
       },
@@ -60,7 +63,7 @@ resource "helm_release" "karpenter_crd" {
   repository_username = data.aws_ecrpublic_authorization_token.token.user_name
   repository_password = data.aws_ecrpublic_authorization_token.token.password
   chart               = "karpenter-crd"
-  version             = "1.14.1"
+  version             = "1.15.0"
   wait                = true
 
   lifecycle {
@@ -77,7 +80,7 @@ resource "helm_release" "karpenter" {
   repository_password = data.aws_ecrpublic_authorization_token.token.password
   chart               = "karpenter"
   # renovate: datasource=github-releases depName=aws/karpenter-provider-aws
-  version = "1.14.1"
+  version = "1.15.0"
   wait    = true
 
   values = [
@@ -94,6 +97,12 @@ resource "helm_release" "karpenter" {
       # FEATURE_GATES=...StaticCapacity=true... on the controller.
       featureGates:
         staticCapacity: true
+      # Dynamic Resource Allocation (alpha, Karpenter 1.15+): provision nodes for
+      # pods that claim NVIDIA GPUs through ResourceClaims (enables the
+      # draNVIDIAGPU / draEFA gates). Static Capacity Block pools need no Karpenter
+      # support for DRA (Karpenter doesn't simulate them), so Neuron claims work
+      # either way.
+      enableDRA: true
     EOT
   ]
 

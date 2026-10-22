@@ -1,32 +1,43 @@
-# vllm-serving: deploy one vLLM endpoint, or AOT-compile it (Neuron).
+# vllm-serving: deploy one vLLM endpoint, AOT-compile it (Neuron), or profile it.
 #
-#   helm install <name> vllm-serving -f <scenario>.values.yaml                  # serve
-#   helm install <name>-compile vllm-serving -f <scenario>.values.yaml \
-#     --set mode=compile                                                                # compile
+#   helm install <name> vllm-serving -f <scenario>.values.yaml                         # serve
+#   helm install <name>-compile vllm-serving -f <scenario>.values.yaml --set mode=compile
+#   helm install <name>-warmup vllm-serving -f <scenario>.values.yaml --set mode=warmup
+#   helm install <name>-bench vllm-serving -f <scenario>.values.yaml --set mode=bench
 #
 # Fill the values in from the README's Step 1 table. Use the SAME values file for
-# compile and serve: both build the same vLLM engine config, which on Neuron is
-# what makes the compiled graphs (NEFFs) a cache hit at serve time.
+# every mode: they all build the same vLLM engine config, which on Neuron is
+# what makes the compiled graphs (NEFFs) a cache hit at serve time. To try other
+# serving parameters, make another values file and release.
 
 # ---- Mode ---------------------------------------------------------------------
 # serve:   Deployment + Service running `vllm serve` (OpenAI API on `port`)
-# compile: Job on the same NodePool that builds the engine with `vllm bench latency`
-#          (a short latency test, then exits) and uploads the compile cache +
-#          the latency result to s3://<s3Bucket>/<model>/cache/
+# compile: Neuron only. Job that builds the engine - compiling every graph into
+#          the shared Neuron cache (EFS) - then exits. On a CPU node by default
+#          (compile.nodepool), so no accelerator time is spent compiling.
+# warmup:  Neuron only. Job on the serving NodePool and devices: `vllm serve`
+#          until ready (any graph not in the shared cache is compiled and added),
+#          then a short `vllm bench serve` load run with no failed requests. Proves this config
+#          runs on the hardware, from the cache, before you serve it.
+# bench:   Job on the serving NodePool running `vllm bench sweep serve`: starts
+#          this config's `vllm serve` and runs the bench.profiles load against it
+#          in the same container, then uploads the results to
+#          s3://<s3Bucket>/benchmarks/vllm-bench/<release>/
 mode: serve
 
 # ---- Cluster (from terraform output) ------------------------------------------
 region: ""          # output region
 s3Bucket: ""        # output model_storage_bucket
-image: ""           # output vllm_neuron_image | vllm_gpu_image
+image: ""           # an entry of terraform output serving_images
 
 # ---- Scenario (Step 1 table) --------------------------------------------------
 model: gpt-oss-20b  # folder in S3 and under /tmp/models (= API model id /tmp/models/<model>)
 hardware: ""        # neuron | gpu
-nodepool: ""        # Karpenter NodePool, e.g. neuron-trn2-3xl, gpu-p5-4xl
-replicas: 1         # serve mode: pods behind the Service (one per accelerator)
+nodepool: ""        # optional: pin to this Karpenter NodePool. "" = any node of the
+                    # hardware (any trn2 size): the device claim decides what fits
+replicas: 1         # serve mode: pods behind the Service, resources.devices each
 resources:          # per pod
-  devices: 1        # aws.amazon.com/neuron | nvidia.com/gpu
+  devices: 1        # Trainium2 devices | NVIDIA GPUs, claimed through DRA
   cpu: ""
   memory: ""
 
@@ -48,23 +59,93 @@ vllm:
   extraArgs: []
 
 env: {}             # extra container env (Step 1 table)
+podLabels: {}       # extra serving pod labels, e.g. to put several releases behind one Service
+
+# Devices are claimed through DRA: one ResourceClaimTemplate per release for
+# `resources.devices` devices (DeviceClass neuron.aws.com | gpu.nvidia.com).
+# Neuron: more than one device all come from the smallest connected device
+# group that fits (resource.aws.com/devicegroup{4,8,16}_id), so tensor
+# parallelism runs over neighbouring devices. Logical NeuronCore size is fixed
+# at 2 (the only size vLLM-Neuron supports on trn2).
+neuron:
+  platformTarget: trn2      # NEURON_PLATFORM_TARGET_OVERRIDE in every mode: compile and serve trace the same graphs
+  deviceGroupAttribute: ""  # "" = the smallest of devicegroup{4,8,16}_id that fits resources.devices
+  deviceIds: []             # pin to these deviceIds (single-replica tests), e.g. [0, 1]
 
 port: 8080
 
-# compile mode: the short `vllm bench latency` run (must fit max-num-seqs and max-model-len)
+# serve mode: an internal ALB (AWS Load Balancer Controller) in front of the
+# Service, reachable only from inside the VPC. vLLM itself has no auth.
+ingress:
+  enabled: false
+  inboundCidrs: 10.0.0.0/16  # allowed client CIDRs (default: the VPC, terraform/vpc.tf)
+  certificateArn: ""         # ACM certificate: HTTPS on 443 instead of HTTP on 80
+  groupName: ""              # share one ALB across releases (then set host)
+  host: ""                   # route by Host header (required with groupName)
+  idleTimeoutSeconds: 600    # long streamed generations
+
+# Neuron compile cache shared by every node: an EFS volume (terraform/efs.tf,
+# PVC neuron-cache), read-write in every mode. Compiled graphs (NEFFs) are
+# written straight into it (TORCH_NEURONX_NEFF_CACHE_DIR, plus
+# NEURON_LIBTORCH_REMOTE_CACHE for XLA/NKI graphs), so a graph compiled once - by
+# a compile Job, or by a serving pod on a miss - is a cache hit on every other
+# node. (vLLM-Neuron 0.29 has no switch to make a miss fail instead of compile.)
+# Each image gets its own directory, <mountPath>/<hash of image>/.
+neuronCache:
+  pvc: neuron-cache
+  mountPath: /neuron-cache
+
+# compile mode: build the engine (`vllm serve` until /health, then exit), which
+# compiles every graph into the shared cache. Where it runs is compile.nodepool:
+#   x86-cpu-karpenter (default): CPU compile (VLLM_NEURON_CPU_COMPILE) on a node
+#     sized by cpu/memory below - no accelerator time spent compiling;
+#   "" (or the serving nodepool): on the release's Trainium devices.
 compile:
+  nodepool: x86-cpu-karpenter
+  workers: 16                # parallel neuronx-cc processes (NEURON_LIBTORCH_PARALLEL_COMPILE_WORKERS)
+  cpu: "60"                  # CPU compile: the Job's node size (Karpenter picks the instance)
+  memory: 240Gi
+  ephemeralStorage: 100Gi    # weights + local cache (x86 nodes: 200 GiB root volume)
+  timeoutSeconds: 10800      # give up after 3 h
+  # Keep each finished Job (and its pod's logs) this long: 4 h.
+  jobTtlSeconds: 14400
+
+# warmup mode: the load run after the engine is ready
+warmup:
+  # A short load run: fixed-length random prompts at max-num-seqs concurrency.
   inputLen: 128
   outputLen: 32
-  batchSize: 1
-  numItersWarmup: 1
-  numIters: 3
-  # Keep each finished compile Job (and its pod's logs) this long: 4 h.
+  numPrompts: 32
+  timeoutSeconds: 7200       # give up after 2 h (compiling misses included)
+  jobTtlSeconds: 14400
+
+bench:
+  # `vllm bench sweep serve_workload`, once per workload below: a serial run
+  # (concurrency 1: the latency floor), a batch run (all numPrompts at once: max
+  # throughput), then workloadIters - 2 concurrency levels in between (the
+  # latency-throughput curve). Fixed-length random prompts, full output length.
+  workloads:
+    - name: in512-out256
+      inputLen: 512
+      outputLen: 256
+  numPrompts: ""             # per load level; empty = 2.5 x vllm.maxNumSeqs (at least 32): saturates, levels up to ~1.2 x maxNumSeqs
+  workloadIters: 6           # load levels, including the serial and batch runs
+  # Latency SLA per request, in ms (ttft, tpot, e2el), for vLLM's goodput. A
+  # level meets the SLA when sloPercent of its requests do; the summary reports
+  # the highest-throughput level that does. {} = no SLA.
+  slo: {ttft: 1000, tpot: 50}
+  sloPercent: 95
+  numRuns: 1
+  deviceHourlyUsd: ""        # $/hr of one device (trn2: node price / devices, ~2.24) for $/1M output tokens
+  serverReadyTimeoutSeconds: 3600
   jobTtlSeconds: 14400
 
 # ---- Conventions (match terraform/) ---------------------------------------------
 serviceAccounts:
-  serve: model-reader       # S3 read-only (EKS Pod Identity)
-  compile: model-uploader   # S3 read/write
+  serve: s3-reader     # S3 read-only (EKS Pod Identity)
+  compile: s3-writer   # S3 read/write
+  warmup: s3-reader
+  bench: s3-writer
 awsCliImage: amazon/aws-cli
 paths:
   nodeLocal: /mnt/k8s-disks/0   # accelerator nodes' NVMe instance store (RAID0)

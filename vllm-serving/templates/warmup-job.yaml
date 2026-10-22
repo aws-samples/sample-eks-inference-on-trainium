@@ -1,0 +1,86 @@
+{{- include "vllm-serving.validate" . }}
+{{- if eq .Values.mode "warmup" }}
+{{- $dir := include "vllm-serving.modelDir" . }}
+{{- $w := .Values.warmup }}
+{{- $url := printf "http://127.0.0.1:%v" .Values.port }}
+{{- $job := printf "%s-r%d" .Release.Name .Release.Revision | trunc 63 | trimSuffix "-" }}
+# Warmup (Neuron): prove this config runs on its hardware before serving it. On
+# the serving NodePool with the release's devices, start `vllm serve` with the
+# serving engine flags - engine warmup runs every graph once on the device, and
+# any graph not in the shared cache is compiled and added to it - then a short
+# `vllm bench serve` load run that must finish without failed requests. The results go next to the graph
+# manifest, in <neuronCache.mountPath>/manifests/<release>/.
+# Named <release>-r<revision>, like the compile Job.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $job }}
+  labels:
+    {{- include "vllm-serving.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ $w.timeoutSeconds }}
+  ttlSecondsAfterFinished: {{ $w.jobTtlSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "vllm-serving.labels" . | nindent 8 }}
+      annotations:
+        # A long-running Job: Karpenter must not consolidate or replace its node mid-run.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Values.serviceAccounts.warmup }}
+      {{- include "vllm-serving.scheduling" . | nindent 6 }}
+      {{- include "vllm-serving.podClaims" . | nindent 6 }}
+      initContainers:
+        {{- include "vllm-serving.modelDownload" . | nindent 8 }}
+      containers:
+        - name: warmup
+          image: {{ .Values.image }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              out="$VLLM_NEURON_MANIFEST_DIR"; mkdir -p "$TORCH_NEURONX_NEFF_CACHE_DIR" "$NEURON_LIBTORCH_REMOTE_CACHE" "$out"
+              # 1. Start the server; ready = every graph loaded (or compiled) and run once.
+              vllm serve {{ $dir }} --host 127.0.0.1 --port {{ .Values.port }} "$@" &
+              server=$!
+              trap 'kill "$server" 2>/dev/null || true' EXIT
+              until python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5)' {{ $url }}/health 2>/dev/null; do
+                if ! kill -0 "$server" 2>/dev/null; then
+                  rc=0; wait "$server" || rc=$?
+                  echo "vllm serve exited ($rc) before the engine was ready" >&2; exit 1
+                fi
+                sleep 10
+              done
+              echo "==> Engine ready"
+              # 2. A short load run at max-num-seqs concurrency: no failed requests.
+              vllm bench serve --backend openai --model {{ $dir }} --host 127.0.0.1 --port {{ .Values.port }} \
+                --dataset-name random --random-input-len {{ $w.inputLen }} --random-output-len {{ $w.outputLen }} \
+                --num-prompts {{ $w.numPrompts }} --max-concurrency {{ .Values.vllm.maxNumSeqs }} --ignore-eos \
+                --save-result --result-dir "$out" --result-filename warmup-bench.json
+              python3 - "$out/warmup-bench.json" <<'PY'
+              import json, sys
+              r = json.load(open(sys.argv[1]))
+              done, total = r.get("completed", 0), r.get("num_prompts", 0)
+              print(f"==> Load run: {done}/{total} requests, {r.get('output_throughput', 0):.1f} output tok/s, "
+                    f"TTFT p50 {r.get('median_ttft_ms', 0):.0f} ms, TPOT p50 {r.get('median_tpot_ms', 0):.1f} ms")
+              if not total or done != total:
+                  raise SystemExit("failed requests in the load run")
+              PY
+              echo "==> Warmup passed: results and graph manifest in $out"
+            - warmup
+            {{- range include "vllm-serving.engineArgs" . | fromJsonArray }}
+            - {{ . | quote }}
+            {{- end }}
+          resources:
+            {{- include "vllm-serving.resources" . | trim | nindent 12 }}
+          env:
+            {{- include "vllm-serving.env" . | nindent 12 }}
+          volumeMounts:
+            {{- include "vllm-serving.volumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "vllm-serving.volumes" . | nindent 8 }}
+{{- end }}

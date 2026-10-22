@@ -1,5 +1,5 @@
 {{- if eq .Values.mode "serve" }}
-{{ .Release.Name }}: vLLM on {{ .Values.nodepool }} ({{ .Values.replicas }} replica(s))
+{{ .Release.Name }}: vLLM, {{ .Values.replicas }} replica(s) x {{ .Values.resources.devices }} device(s)
 
   kubectl rollout status deploy/{{ .Release.Name }} --timeout=60m
   kubectl logs -f deploy/{{ .Release.Name }} -c vllm
@@ -7,10 +7,30 @@
 
   In-cluster URL: http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.port }}
   Model id:       {{ include "vllm-serving.modelDir" . }}
-{{- else }}
-{{ .Release.Name }}: compile Job on {{ .Values.nodepool }}
+{{- if .Values.ingress.enabled }}
+
+  Internal ALB (from inside the VPC, a few minutes after install):
+  kubectl get ingress {{ .Release.Name }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+{{- end }}
+{{- else if eq .Values.mode "compile" }}
+{{ .Release.Name }}: compile Job {{ if include "vllm-serving.onDevice" . }}on the devices{{ else }}on {{ .Values.compile.nodepool }} (CPU compile){{ end }}
 
   kubectl logs -f -l app.kubernetes.io/instance={{ .Release.Name }} -c compile --tail=-1
   kubectl wait --for=condition=complete job -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=180m
-  aws s3 ls s3://{{ .Values.s3Bucket }}/{{ .Values.model }}/cache/results/
+
+  Compiled graphs: the neuron-cache EFS volume ({{ .Values.neuronCache.mountPath }}/{{ include "vllm-serving.cacheKey" . }}/native-neff, /xla; keyed by image),
+  manifest in {{ .Values.neuronCache.mountPath }}/manifests/{{ .Release.Name }}/
+{{- else if eq .Values.mode "warmup" }}
+{{ .Release.Name }}: warmup Job on {{ .Values.resources.devices }} device(s)
+
+  kubectl logs -f -l app.kubernetes.io/instance={{ .Release.Name }} -c warmup --tail=-1
+  kubectl wait --for=condition=complete job -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=120m
+
+  Results (warmup-bench.json) and graph manifest: {{ .Values.neuronCache.mountPath }}/manifests/{{ .Release.Name }}/
+{{- else }}
+{{ .Release.Name }}: vllm bench sweep on {{ .Values.resources.devices }} device(s)
+
+  kubectl logs -f -l app.kubernetes.io/instance={{ .Release.Name }} -c bench --tail=-1
+  kubectl wait --for=condition=complete job -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=180m
+  aws s3 ls --recursive s3://{{ .Values.s3Bucket }}/benchmarks/vllm-bench/{{ .Release.Name }}/
 {{- end }}

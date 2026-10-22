@@ -18,22 +18,7 @@ output "model_storage_bucket" {
   value       = local.s3_bucket_name
 }
 
-output "vllm_neuron_image" {
-  description = "ECR copy of var.vllm_neuron_image (Neuron compile + serving)."
-  value       = "${aws_ecr_repository.vllm["neuron"].repository_url}:${local.vllm_image_tags["neuron"]}"
-}
-
-output "vllm_gpu_image" {
-  description = "ECR copy of var.vllm_gpu_image (GPU serving)."
-  value       = "${aws_ecr_repository.vllm["gpu"].repository_url}:${local.vllm_image_tags["gpu"]}"
-}
-
-output "ray_neuron_image" {
-  description = "Ray Serve image built FROM vllm_neuron_image (optional Ray path)."
-  value       = "${aws_ecr_repository.ray["neuron"].repository_url}:${local.ray_image_tags["neuron"]}"
-}
-
-output "ray_gpu_image" {
-  description = "Ray Serve image built FROM vllm_gpu_image (optional Ray path)."
-  value       = "${aws_ecr_repository.ray["gpu"].repository_url}:${local.ray_image_tags["gpu"]}"
+output "serving_images" {
+  description = "Image URI:tag per folder of container-images/, for the Helm releases' image value, e.g. terraform output -json serving_images | jq -r '.\"vllm-neuron\"'."
+  value       = local.image_uris
 }

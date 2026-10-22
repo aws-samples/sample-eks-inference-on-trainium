@@ -62,7 +62,7 @@ variable "capacity_blocks_nodepools" {
 }
 
 variable "existing_cache_bucket" {
-  description = "Name of an existing S3 bucket to use as the model cache (weights, compile cache, benchmark results), e.g. one from an earlier cluster. Empty: create a new bucket. An existing bucket is never modified or deleted by Terraform; keep it in var.region (the S3 gateway endpoint only covers same-region buckets) and in this account."
+  description = "Name of an existing S3 bucket to use for the model weights and benchmark results, e.g. one from an earlier cluster. Empty: create a new bucket. An existing bucket is never modified or deleted by Terraform; keep it in var.region (the S3 gateway endpoint only covers same-region buckets) and in this account."
   type        = string
   default     = ""
 }
@@ -73,22 +73,4 @@ variable "models" {
   default = {
     "gpt-oss-20b" = "openai/gpt-oss-20b"
   }
-}
-
-variable "vllm_neuron_image" {
-  description = "vLLM-Neuron Deep Learning Container, copied to ECR (output vllm_neuron_image) and the base of the ray-neuron image. Compile and serve with the same image: NEFFs only match the Neuron SDK they were compiled with."
-  type        = string
-  default     = "public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04"
-}
-
-variable "vllm_gpu_image" {
-  description = "vLLM CUDA image, copied to ECR (output vllm_gpu_image) and the base of the ray-gpu image. Keep its vLLM version in step with vllm_neuron_image (vLLM 0.24.0) so GPU and Neuron results compare like for like."
-  type        = string
-  default     = "vllm/vllm-openai:v0.24.0"
-}
-
-variable "ray_version" {
-  description = "Ray version installed on top of each vLLM image to build the ray-neuron and ray-gpu images. Needs wheels for both images' Python (3.13 Neuron DLC, 3.12 vLLM CUDA) and must be supported by the KubeRay operator (1.7.x -> Ray 2.55/2.56)."
-  type        = string
-  default     = "2.56.1"
 }

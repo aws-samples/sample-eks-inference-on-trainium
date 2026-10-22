@@ -1,6 +1,0 @@
-apiVersion: v2
-name: benchmark
-description: Model-server-agnostic LLM inference benchmark (inference-perf), one Job per endpoint, results to S3
-type: application
-version: 0.1.0
-appVersion: "1.0.0"

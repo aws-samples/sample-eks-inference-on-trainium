@@ -26,6 +26,13 @@ module "eks" {
         nodeSelector = { "karpenter.sh/controller" = "true" }
       })
     }
+    # EFS CSI driver: mounts the shared Neuron compile cache (efs.tf). Controller
+    # on the managed node group; its node DaemonSet tolerates every taint.
+    aws-efs-csi-driver = {
+      configuration_values = jsonencode({
+        controller = { nodeSelector = { "karpenter.sh/controller" = "true" } }
+      })
+    }
     eks-node-monitoring-agent = {}
     eks-pod-identity-agent = {
       before_compute = true

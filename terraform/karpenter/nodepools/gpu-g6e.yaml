@@ -11,6 +11,9 @@ spec:
       labels:
         provisionerType: Karpenter
         nvidia.com/gpu: "true"
+        # Where the NVIDIA DRA kubelet plugin runs; set here so it's on the node
+        # from boot (the pinned AMI isn't the al2023@latest alias that sets it).
+        nvidia.com/gpu.present: "true"
     spec:
       taints:
         - key: nvidia.com/gpu

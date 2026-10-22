@@ -1,0 +1,16 @@
+# gpt-oss-20b on one NVIDIA H100 (p5.4xlarge: 1x H100 80 GB, 16 vCPU, 256 GiB):
+# 1 replica x TP1. MXFP4 experts (vLLM's default for the published checkpoint).
+# Pinned to the node pool of its Capacity Block: set nodepool to the key of the
+# p5 entry in terraform.tfvars capacity_blocks (e.g. "gpu-p5-4xl").
+# Modes: serve and bench (compile and warmup are Neuron only).
+hardware: gpu
+nodepool: gpu-p5-4xl
+model: gpt-oss-20b
+replicas: 1
+# Stays below the node's allocatable.
+resources: { devices: 1, cpu: "12", memory: 200Gi }
+vllm:
+  tensorParallelSize: 1
+  maxModelLen: 8192
+  maxNumSeqs: 32
+  maxNumBatchedTokens: 8192

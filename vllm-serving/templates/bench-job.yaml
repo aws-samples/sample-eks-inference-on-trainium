@@ -1,0 +1,211 @@
+{{- include "vllm-serving.validate" . }}
+{{- if eq .Values.mode "bench" }}
+{{- $dir := include "vllm-serving.modelDir" . }}
+{{- $b := .Values.bench }}
+{{- $job := printf "%s-r%d" .Release.Name .Release.Revision | trunc 63 | trimSuffix "-" }}
+{{- /* bench.workloads -> --bench-params: one exploration per input/output length. */}}
+{{- /* Requests per load level: bench.numPrompts, else 2.5 x maxNumSeqs (at least 32): the batch run saturates the engine and the levels reach about 1.2 x maxNumSeqs. */}}
+{{- $numPrompts := $b.numPrompts | default (max 32 (mulf 2.5 .Values.vllm.maxNumSeqs | ceil | int)) | int }}
+{{- $params := list }}
+{{- range $w := $b.workloads }}
+{{- $params = append $params (dict "_benchmark_name" $w.name "random_input_len" $w.inputLen "random_output_len" $w.outputLen "num_prompts" $numPrompts) }}
+{{- end }}
+{{- /* The server listens on the pod IP so Prometheus can scrape it through the Service below; the benchmark client stays on loopback. */}}
+{{- $serveCmd := list "vllm" "serve" $dir "--host" "0.0.0.0" "--port" (toString .Values.port) }}
+{{- range include "vllm-serving.engineArgs" . | fromJsonArray }}{{ $serveCmd = append $serveCmd . }}{{ end }}
+{{- $benchCmd := list "vllm" "bench" "serve" "--backend" "openai" "--model" $dir "--host" "127.0.0.1" "--port" (toString .Values.port) "--dataset-name" "random" "--ignore-eos" "--metric-percentiles" "50,90,95,99" }}
+{{- with $b.slo }}
+{{- $benchCmd = append $benchCmd "--goodput" }}
+{{- range $k, $v := . }}{{ $benchCmd = append $benchCmd (printf "%s:%v" $k $v) }}{{ end }}
+{{- end }}
+{{- $hourly := "" }}
+{{- if ne (toString $b.deviceHourlyUsd) "" }}{{ $hourly = mulf (float64 $b.deviceHourlyUsd) (float64 .Values.resources.devices) | toString }}{{ end }}
+# Profile this release's serving config with `vllm bench sweep serve_workload`:
+# it starts the same `vllm serve` the serve mode runs (same engine flags, same
+# Neuron cache) inside this Job's container, then for each bench.workloads entry
+#   1. a serial run, concurrency 1: the latency floor;
+#   2. a batch run, all numPrompts at once: the maximum throughput, and the
+#      concurrency the server actually sustains at saturation;
+#   3. workloadIters - 2 concurrency levels in between: the latency-throughput
+#      curve, scored against bench.slo with vLLM's goodput.
+# The summary (summary.md) reports all three and the highest-throughput level
+# within the SLA. Results (per-run JSON, summary.csv, summary.md) and this
+# release's serving.json go to s3://<s3Bucket>/benchmarks/vllm-bench/<release>/<timestamp>/.
+# Runs on the serving devices, so on a single-device node it can't run next to
+# the serve Deployment.
+#
+# The Service makes the run's server-side vLLM metrics visible: the cluster-wide
+# `metrics-enabled` ServiceMonitor scrapes it (port `http`, /metrics every 1s),
+# so the Grafana Benchmark and vLLM dashboards show it as service <release>.
+# ClusterIP only, like the serve mode's Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "vllm-serving.labels" . | nindent 4 }}
+    metrics: enabled
+spec:
+  ports:
+    - name: http
+      port: {{ .Values.port }}
+      protocol: TCP
+      targetPort: http
+  selector:
+    {{- include "vllm-serving.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $job }}-bench
+  labels:
+    {{- include "vllm-serving.labels" . | nindent 4 }}
+data:
+  # Each argument single-quoted: the sweep shlex-splits these strings.
+  serve-cmd: {{ $serveCmd | join "' '" | printf "'%s'" | quote }}
+  bench-cmd: {{ $benchCmd | join "' '" | printf "'%s'" | quote }}
+  bench-params.json: |
+    {{- toPrettyJson $params | nindent 4 }}
+  summary.py: |
+    # summary.csv (one row per run) -> summary.md: latency, max throughput,
+    # the latency-throughput curve, and the best level within the SLA.
+    import sys
+    import pandas as pd
+
+    df = pd.read_csv(sys.argv[1])
+    hourly = float(sys.argv[2]) if sys.argv[2] else None
+    slo_pct = float(sys.argv[3])
+    has_slo = "request_goodput" in df and df["request_goodput"].notna().any()
+
+    def col(name):
+        return df[name] if name in df else pd.Series([float("nan")] * len(df), index=df.index)
+
+    df["in_flight"] = col("request_throughput") * col("mean_e2el_ms") / 1000
+    df["good_pct"] = 100 * col("request_goodput") / col("request_throughput")
+    df["usd_1m"] = hourly / (col("output_throughput") * 3600) * 1e6 if hourly else float("nan")
+
+    def fmt(v, d=1):
+        return "-" if pd.isna(v) else f"{v:.{d}f}"
+
+    print("Latencies in ms. TPOT excludes the first token; ITL is per streamed chunk.")
+    print("In flight = req/s x mean E2E latency (Little's law): the concurrency the server sustained.")
+    if hourly:
+        print(f"$/1M out = ${hourly}/hr (this pod's devices) / output tok/s.")
+    for name, g in df.groupby("_benchmark_name", sort=False):
+        g = g.sort_values("max_concurrency")
+        serial, batch = g.iloc[0], g.loc[g["output_throughput"].idxmax()]
+        print(f"\n## {name}\n")
+        print(f"**Latency** (concurrency 1): TTFT p50 {fmt(serial.get('median_ttft_ms'))} / p95 {fmt(serial.get('p95_ttft_ms'))}, "
+              f"TPOT p50 {fmt(serial.get('median_tpot_ms'), 2)} / p95 {fmt(serial.get('p95_tpot_ms'), 2)}, "
+              f"E2E p50 {fmt(serial.get('median_e2el_ms', float('nan')) / 1000, 2)} s")
+        print(f"**Max throughput**: {fmt(batch['output_throughput'])} output tok/s, {fmt(batch['request_throughput'], 2)} req/s, "
+              f"{fmt(batch['in_flight'])} in flight, $/1M {fmt(batch['usd_1m'], 2)}")
+        if has_slo:
+            ok = g[g["good_pct"] >= slo_pct]
+            if len(ok):
+                best = ok.loc[ok["output_throughput"].idxmax()]
+                print(f"**Within SLA** (>= {slo_pct:g}% of requests): {fmt(best['output_throughput'])} output tok/s at concurrency "
+                      f"{int(best['max_concurrency'])} ({fmt(best['in_flight'])} in flight), $/1M {fmt(best['usd_1m'], 2)}")
+            else:
+                print(f"**Within SLA**: no load level had >= {slo_pct:g}% of requests within the SLA")
+        # Every load level, every latency percentile.
+        cols = {"concurrency": g["max_concurrency"].astype(int),
+                "in flight": g["in_flight"].round(1),
+                "in/out tok": col("random_input_len")[g.index].astype("Int64").astype(str) + "/"
+                              + col("random_output_len")[g.index].astype("Int64").astype(str),
+                "ok/fail": col("completed")[g.index].astype("Int64").astype(str) + "/"
+                           + col("failed")[g.index].fillna(0).astype("Int64").astype(str),
+                "req/s": g["request_throughput"].round(2),
+                "out tok/s": g["output_throughput"].round(1),
+                "total tok/s": col("total_token_throughput")[g.index].round(1)}
+        for m, label, d in (("ttft", "TTFT", 1), ("tpot", "TPOT", 2), ("itl", "ITL", 2), ("e2el", "E2E", 0)):
+            cols[f"{label} mean"] = col(f"mean_{m}_ms")[g.index].round(d)
+            for p in ("median", "p90", "p95", "p99"):
+                cols[f"{label} {'p50' if p == 'median' else p}"] = col(f"{p}_{m}_ms")[g.index].round(d)
+        curve = pd.DataFrame(cols)
+        if has_slo:
+            curve["goodput req/s"] = col("request_goodput")[g.index].round(2)
+            curve["within SLA %"] = g["good_pct"].round(1)
+        if hourly:
+            curve["$/1M out"] = g["usd_1m"].round(2)
+        print("\n**Latency-throughput curve** (latencies in ms)\n")
+        try:
+            print(curve.to_markdown(index=False))
+        except ImportError:
+            print(curve.to_string(index=False))
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $job }}
+  labels:
+    {{- include "vllm-serving.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: {{ $b.jobTtlSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "vllm-serving.labels" . | nindent 8 }}
+      annotations:
+        # A long-running Job: Karpenter must not consolidate or replace its node mid-run.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Values.serviceAccounts.bench }}
+      {{- include "vllm-serving.scheduling" . | nindent 6 }}
+      {{- include "vllm-serving.podClaims" . | nindent 6 }}
+      initContainers:
+        {{- include "vllm-serving.modelDownload" . | nindent 8 }}
+      containers:
+        - name: bench
+          image: {{ .Values.image }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              out=/results; ts=$(date -u +%Y%m%dT%H%M%SZ)
+              vllm bench sweep serve_workload \
+                --serve-cmd "$(cat /bench/serve-cmd)" \
+                --bench-cmd "$(cat /bench/bench-cmd)" \
+                --bench-params /bench/bench-params.json \
+                --workload-var max_concurrency \
+                --workload-iters {{ $b.workloadIters }} \
+                --num-runs {{ $b.numRuns }} \
+                --server-ready-timeout {{ $b.serverReadyTimeoutSeconds }} \
+                --after-bench-cmd true \
+                --show-stdout \
+                -o "$out" -e "$ts"
+              python3 /bench/summary.py "$out/$ts/summary.csv" {{ $hourly | quote }} {{ $b.sloPercent | quote }} | tee "$out/$ts/summary.md"
+              cp /serving-config/serving.json "$out/$ts/"
+              aws s3 cp --recursive --no-progress "$out/$ts/" "s3://{{ .Values.s3Bucket }}/benchmarks/vllm-bench/{{ .Release.Name }}/$ts/"
+              echo "==> s3://{{ .Values.s3Bucket }}/benchmarks/vllm-bench/{{ .Release.Name }}/$ts/"
+          resources:
+            {{- include "vllm-serving.resources" . | trim | nindent 12 }}
+          env:
+            - name: AWS_REGION
+              value: {{ .Values.region }}
+            {{- include "vllm-serving.env" . | nindent 12 }}
+          volumeMounts:
+            {{- include "vllm-serving.volumeMounts" . | nindent 12 }}
+            - name: bench
+              mountPath: /bench
+            - name: serving-config
+              mountPath: /serving-config
+            - name: results
+              mountPath: /results
+      volumes:
+        {{- include "vllm-serving.volumes" . | nindent 8 }}
+        - name: bench
+          configMap:
+            name: {{ $job }}-bench
+        - name: serving-config
+          configMap:
+            name: {{ .Release.Name }}-serving-config
+        - name: results
+          emptyDir: {}
+{{- end }}

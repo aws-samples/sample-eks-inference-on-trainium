@@ -1,13 +1,8 @@
 {{- include "vllm-serving.validate" . }}
-{{- if eq .Values.hardware "neuron" }}
+{{- if include "vllm-serving.onDevice" . }}
 {{- $n := int .Values.resources.devices }}
-{{- /* Smallest connected group the driver publishes (1/4/8/16 on trn2.48xlarge) that fits. */}}
-{{- $group := 16 }}
-{{- range $g := list 8 4 1 }}{{ if le $n $g }}{{ $group = $g }}{{ end }}{{ end }}
-# The release's Trainium2 devices, from the Neuron DRA driver. More than one:
-# all from the same connected device group (on trn2.48xlarge's 4x4 torus a group
-# of 4 is one ring of 4 devices), so tensor parallelism stays on neighbouring
-# devices - the device plugin could hand out any N devices.
+# The release's devices, from the hardware's DRA driver: each pod gets its own
+# claim for resources.devices devices.
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
 metadata:
@@ -18,30 +13,29 @@ spec:
   spec:
     devices:
       requests:
-        - name: neurons
+        - name: devices
           exactly:
-            deviceClassName: neuron.aws.com
+            deviceClassName: {{ include "vllm-serving.deviceClass" . }}
             allocationMode: ExactCount
             count: {{ $n }}
+            {{- if eq .Values.hardware "neuron" }}
             {{- with .Values.neuron.deviceIds }}
             # Pinned devices (e.g. to compare neighbouring vs non-neighbouring pairs).
             selectors:
               - cel:
                   expression: "device.attributes['neuron.aws.com'].deviceId in {{ toJson . }}"
             {{- end }}
-      {{- if gt $n 1 }}
+            {{- end }}
+      {{- if and (eq .Values.hardware "neuron") (gt $n 1) }}
+      {{- /* Smallest connected group the Neuron driver publishes (1/4/8/16 on trn2.48xlarge) that fits. */}}
+      {{- $group := 16 }}
+      {{- range $g := list 8 4 1 }}{{ if le $n $g }}{{ $group = $g }}{{ end }}{{ end }}
+      # Trainium2: all from the same connected device group (on trn2.48xlarge's
+      # 4x4 torus a group of 4 is one ring of 4 devices), so tensor parallelism
+      # stays on neighbouring devices. NVIDIA GPUs on one node all share NVSwitch,
+      # so any N will do.
       constraints:
-        - requests: ["neurons"]
+        - requests: ["devices"]
           matchAttribute: {{ .Values.neuron.deviceGroupAttribute | default (printf "resource.aws.com/devicegroup%d_id" $group) | quote }}
-      {{- end }}
-      {{- with .Values.neuron.lnc }}
-      config:
-        - requests: ["neurons"]
-          opaque:
-            driver: neuron.aws.com
-            parameters:
-              apiVersion: neuron.aws.com/v1
-              kind: NeuronConfig
-              logicalNeuronCore: {{ int . }}
       {{- end }}
 {{- end }}

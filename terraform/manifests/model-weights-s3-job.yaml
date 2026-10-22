@@ -13,7 +13,7 @@ spec:
         app: model-weights
         model: ${model_name}
     spec:
-      serviceAccountName: model-uploader
+      serviceAccountName: s3-writer
       restartPolicy: Never
 
       # No accelerator needed - runs on the general-purpose x86 pool.

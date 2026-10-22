@@ -1,12 +1,15 @@
+{{- include "vllm-serving.validate" . }}
 {{- if eq .Values.mode "compile" }}
 {{- $dir := include "vllm-serving.modelDir" . }}
-{{- $s3 := printf "s3://%s/%s" .Values.s3Bucket .Values.model }}
 {{- $c := .Values.compile }}
 {{- $job := printf "%s-r%d" .Release.Name .Release.Revision | trunc 63 | trimSuffix "-" }}
-# AOT compile: build the scenario's vLLM engine on its NodePool and run a short
-# `vllm bench latency`. On Neuron, building the engine compiles every graph into
-# VLLM_CACHE_ROOT; the short run proves they execute. Then upload the cache and
-# the latency result to S3, where every serving pod with the same values pulls it.
+# AOT compile (Neuron): build the scenario's vLLM engine - `vllm serve` with the
+# serving engine flags, until /health answers, then stop - which compiles every
+# prefill/decode graph straight into the shared Neuron cache on EFS, where every
+# serving pod with the same values finds it. compile.nodepool picks where: the x86
+# pool (CPU compile, no device) or "" (on the release's devices).
+# Concurrent compiles into the same cache are safe: entries are published
+# atomically, and a graph already there is reused, not recompiled.
 # Named <release>-r<revision>: a Job's spec is immutable, so every
 # `helm upgrade --install` creates a fresh Job and Helm deletes the previous one
 # (as does `helm uninstall`, stopping it if still running). Otherwise a finished
@@ -19,86 +22,72 @@ metadata:
     {{- include "vllm-serving.labels" . | nindent 4 }}
 spec:
   backoffLimit: 0
+  activeDeadlineSeconds: {{ $c.timeoutSeconds }}
   ttlSecondsAfterFinished: {{ $c.jobTtlSeconds }}
   template:
     metadata:
       labels:
         {{- include "vllm-serving.labels" . | nindent 8 }}
+      annotations:
+        # A long-running Job: Karpenter must not consolidate or replace its node mid-run.
+        karpenter.sh/do-not-disrupt: "true"
     spec:
       restartPolicy: Never
       serviceAccountName: {{ .Values.serviceAccounts.compile }}
-      nodeSelector:
-        karpenter.sh/nodepool: {{ .Values.nodepool }}
-      tolerations:
-        {{- include "vllm-serving.tolerations" . | nindent 8 }}
+      {{- include "vllm-serving.scheduling" . | nindent 6 }}
       {{- include "vllm-serving.podClaims" . | nindent 6 }}
       initContainers:
         {{- include "vllm-serving.modelDownload" . | nindent 8 }}
       containers:
-        # 1. Compile + latency test, then signal the uploader.
         - name: compile
           image: {{ .Values.image }}
           command:
             - /bin/bash
             - -c
             - |
-              vllm bench latency "$@" && touch /signal/done || { touch /signal/failed; exit 1; }
-            - vllm-bench
-            - --model={{ $dir }}
+              set -euo pipefail
+              mkdir -p "$TORCH_NEURONX_NEFF_CACHE_DIR" "$NEURON_LIBTORCH_REMOTE_CACHE" "$VLLM_NEURON_MANIFEST_DIR"
+              # 1. Build the engine; ready = every graph compiled (and in the cache).
+              vllm serve {{ $dir }} --host 127.0.0.1 --port {{ .Values.port }} "$@" &
+              server=$!
+              until python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5)' \
+                  http://127.0.0.1:{{ .Values.port }}/health 2>/dev/null; do
+                if ! kill -0 "$server" 2>/dev/null; then
+                  rc=0; wait "$server" || rc=$?
+                  echo "vllm serve exited ($rc) before the engine was ready" >&2; exit 1
+                fi
+                sleep 10
+              done
+              echo "==> Engine ready: all graphs compiled"
+              kill "$server"; wait "$server" 2>/dev/null || true
+              # 2. Native NEFFs are already in the shared cache. XLA/NKI graphs land
+              # in the local cache first: publish any complete one (no-op if there).
+              python3 - <<'PY'
+              import os, re, sys
+              from libtorch_neuronx_lite import envs
+              from libtorch_neuronx_lite.compile.cache import save_cache
+              local, remote = envs.get_neuron_compile_cache_dir(), os.environ["NEURON_LIBTORCH_REMOTE_CACHE"]
+              keys = sorted(d for d in os.listdir(local) if re.fullmatch(r"[0-9a-f]{32}", d)) if os.path.isdir(local) else []
+              for key in keys:
+                  save_cache(local, remote, key)
+              native = os.environ["TORCH_NEURONX_NEFF_CACHE_DIR"]
+              neffs = sum(f.endswith(".neff") for _, _, files in os.walk(native) for f in files)
+              print(f"==> Shared cache: {neffs} native NEFFs in {native}, {len(keys)} XLA/NKI graphs published to {remote}")
+              if not neffs and not keys:
+                  sys.exit("no compiled graphs found")
+              PY
+              echo "==> Manifest: $VLLM_NEURON_MANIFEST_DIR"
+              find "$VLLM_NEURON_MANIFEST_DIR" -name manifest.json
+            - compile
             {{- range include "vllm-serving.engineArgs" . | fromJsonArray }}
             - {{ . | quote }}
             {{- end }}
-            - --input-len={{ $c.inputLen }}
-            - --output-len={{ $c.outputLen }}
-            - --batch-size={{ $c.batchSize }}
-            - --num-iters-warmup={{ $c.numItersWarmup }}
-            - --num-iters={{ $c.numIters }}
-            - --output-json=/signal/latency.json
           resources:
             {{- include "vllm-serving.resources" . | trim | nindent 12 }}
           env:
             {{- include "vllm-serving.env" . | nindent 12 }}
           volumeMounts:
-            - name: dshm
-              mountPath: /dev/shm
-            - name: local-storage
-              mountPath: {{ .Values.paths.models }}
-            {{- include "vllm-serving.nkiCacheMount" . | nindent 12 }}
-            - name: signal
-              mountPath: /signal
-        # 2. Upload: sync the compile cache to S3 (only new files transfer) and
-        # store the latency result next to it.
-        - name: upload
-          image: {{ .Values.awsCliImage }}
-          command: ["/bin/bash", "-c"]
-          env:
-            - name: AWS_REGION
-              value: {{ .Values.region }}
-          args:
-            - |
-              set -euo pipefail
-              until [ -f /signal/done ] || [ -f /signal/failed ]; do sleep 10; done
-              [ -f /signal/done ] || { echo "compile failed - nothing to upload" >&2; exit 1; }
-              aws configure set s3.preferred_transfer_client crt
-              # NEFFs only: the NKI kernel cache points at this pod's /var/tmp.
-              aws s3 sync "{{ $dir }}/{{ .Values.cacheDir }}/" "{{ $s3 }}/{{ .Values.cacheDir }}/" --exclude "neuron/compile_cache/nki/*"
-              aws s3 cp /signal/latency.json "{{ $s3 }}/{{ .Values.cacheDir }}/results/{{ .Release.Name }}-latency.json"
-              echo "Uploaded {{ $dir }}/{{ .Values.cacheDir }}/ to {{ $s3 }}/{{ .Values.cacheDir }}/"
-          volumeMounts:
-            - name: local-storage
-              mountPath: {{ .Values.paths.models }}
-            - name: signal
-              mountPath: /signal
+            {{- include "vllm-serving.volumeMounts" . | nindent 12 }}
       volumes:
-        - name: dshm
-          emptyDir:
-            medium: Memory
-        # The node's NVMe, same as serving: a serving pod scheduled here later
-        # finds the cache locally too.
-        - name: local-storage
-          hostPath:
-            path: {{ .Values.paths.nodeLocal }}
-            type: Directory
-        - name: signal
-          emptyDir: {}
+        {{- include "vllm-serving.volumes" . | nindent 8 }}
 {{- end }}

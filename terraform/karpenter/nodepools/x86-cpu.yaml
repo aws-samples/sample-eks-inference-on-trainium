@@ -3,9 +3,12 @@ kind: NodePool
 metadata:
   name: x86-cpu-karpenter
 spec:
-  # Dynamic, on-demand x86 capacity for CPU work: the model-weights Job and the
-  # Ray head. Karpenter launches a node when a pod needs one and consolidates it
-  # away when it's empty.
+  # Dynamic, on-demand x86 capacity for CPU work: the model-weights Job, the
+  # Neuron CPU compile Jobs and the Ray head, on instance types with local NVMe
+  # (fast weights copy, image pull and compile cache). Sizes up to 32xlarge, the
+  # largest with NVMe, so a compile Job can ask for a large node (neuronx-cc runs
+  # one process per compile worker); Karpenter launches a node when a pod needs
+  # one and consolidates it away when it's empty.
   template:
     metadata:
       labels:
@@ -17,12 +20,19 @@ spec:
           value: "true"
           effect: "NoSchedule"
       requirements:
-        - key: "karpenter.k8s.aws/instance-family"
+        # c/m/r with local NVMe (c5d/m5d/r5d, c6id/m6id/r6id, ... where offered).
+        - key: "karpenter.k8s.aws/instance-category"
           operator: In
-          values: ["c5", "m5", "r5"]
+          values: ["c", "m", "r"]
+        - key: "karpenter.k8s.aws/instance-generation"
+          operator: Gt
+          values: ["4"]
+        - key: "karpenter.k8s.aws/instance-local-nvme"
+          operator: Gt
+          values: ["0"]
         - key: "karpenter.k8s.aws/instance-size"
           operator: In
-          values: ["4xlarge", "8xlarge"]
+          values: ["4xlarge", "8xlarge", "9xlarge", "12xlarge", "16xlarge", "18xlarge", "24xlarge", "32xlarge"]
         - key: "kubernetes.io/arch"
           operator: In
           values: ["amd64"]
@@ -36,8 +46,8 @@ spec:
         kind: EC2NodeClass
         name: x86-cpu-karpenter
   limits:
-    cpu: 128
-    memory: 512Gi
+    cpu: 384
+    memory: 3072Gi
   disruption:
     consolidateAfter: 300s
     consolidationPolicy: WhenEmptyOrUnderutilized

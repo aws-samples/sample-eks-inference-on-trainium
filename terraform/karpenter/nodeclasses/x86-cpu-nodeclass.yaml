@@ -6,12 +6,17 @@ spec:
   amiFamily: AL2023
   amiSelectorTerms:
     - name: ${x86_ami_name}
+  # Local NVMe (the pool only launches instance types that have it), striped
+  # and used for the kubelet's ephemeral storage and containerd's images: the
+  # weights, a compile's local cache and the multi-GB serving image all land on
+  # NVMe instead of the EBS root volume.
+  instanceStorePolicy: RAID0
   blockDeviceMappings:
     - deviceName: /dev/xvda
       ebs:
         deleteOnTermination: true
         encrypted: true
-        volumeSize: 200Gi
+        volumeSize: 100Gi
         volumeType: gp3
   detailedMonitoring: true
   role: "${name}-karpenter-node"

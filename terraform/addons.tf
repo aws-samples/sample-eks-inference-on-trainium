@@ -11,8 +11,10 @@ module "data_addons" {
   enable_aws_neuron_device_plugin = false
 
   #---------------------------------------------------------------
-  # NVIDIA GPU Operator (provides the GPU device plugin + DCGM exporter
-  # for GPU metrics). Driver and container toolkit are disabled because the
+  # NVIDIA GPU Operator: DCGM exporter (GPU metrics) and NFD (GPU node labels).
+  # GPUs are allocated by the NVIDIA DRA driver (helm_release.nvidia_dra_driver
+  # below), so the operator's device plugin is off: the two can't manage the
+  # same GPUs. Driver and container toolkit are off too, because the
   # EKS-optimized NVIDIA AMI already ships them.
   #---------------------------------------------------------------
   enable_nvidia_gpu_operator = true
@@ -25,12 +27,18 @@ module "data_addons" {
         enabled: false
       toolkit:
         enabled: false
+      devicePlugin:
+        enabled: false
       dcgmExporter:
         enabled: true
-        # Collect GPU stats every 1s (default 30s) to match the 1s scrape.
         env:
+          # Collect GPU stats every 1s (default 30s) to match the 1s scrape.
           - name: DCGM_EXPORTER_INTERVAL
             value: "1000"
+          # Attribute GPU metrics to the pods holding them through DRA claims
+          # (pod/namespace labels), not device-plugin allocations.
+          - name: DCGM_EXPORTER_KUBERNETES_ENABLE_DRA
+            value: "true"
         serviceMonitor:
           enabled: true
           interval: 1s
@@ -121,6 +129,39 @@ resource "helm_release" "neuron" {
   ]
 
   depends_on = [module.eks]
+}
+
+################################################################################
+# NVIDIA DRA driver (Dynamic Resource Allocation) for GPUs
+################################################################################
+# Publishes every NVIDIA GPU in a ResourceSlice (DeviceClass gpu.nvidia.com);
+# the vllm-serving chart and the Ray manifests claim GPUs through it, and
+# Karpenter (settings.enableDRA) provisions GPU nodes for pending claims.
+# ComputeDomains (multi-node NVLink) are off: Karpenter doesn't provision for
+# them. The kubelet plugin runs on nodes NFD labels as NVIDIA GPU nodes.
+resource "helm_release" "nvidia_dra_driver" {
+  name             = "nvidia-dra-driver-gpu"
+  repository       = "https://helm.ngc.nvidia.com/nvidia"
+  chart            = "nvidia-dra-driver-gpu"
+  version          = "25.12.0"
+  namespace        = "nvidia-dra-driver-gpu"
+  create_namespace = true
+
+  values = [
+    <<-EOT
+    gpuResourcesEnabledOverride: true
+    resources:
+      gpus:
+        enabled: true
+      computeDomains:
+        enabled: false
+    kubeletPlugin:
+      tolerations:
+        - operator: Exists
+    EOT
+  ]
+
+  depends_on = [module.data_addons]
 }
 
 ################################################################################

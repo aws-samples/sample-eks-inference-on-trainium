@@ -1,0 +1,15 @@
+# gpt-oss-20b on one NVIDIA L40S (g6e.2xlarge: 1x L40S 48 GB, 8 vCPU, 64 GiB):
+# 1 replica x TP1, on the on-demand/Spot gpu-g6e node pool (no reservation).
+# MXFP4 experts (vLLM's default for the published checkpoint).
+# Modes: serve and bench (compile and warmup are Neuron only).
+hardware: gpu
+nodepool: gpu-g6e
+model: gpt-oss-20b
+replicas: 1
+# Needs more than a g6e.xlarge (4 vCPU / 32 GiB) offers, so Karpenter picks a g6e.2xlarge.
+resources: { devices: 1, cpu: "6", memory: 48Gi }
+vllm:
+  tensorParallelSize: 1
+  maxModelLen: 8192
+  maxNumSeqs: 32
+  maxNumBatchedTokens: 8192

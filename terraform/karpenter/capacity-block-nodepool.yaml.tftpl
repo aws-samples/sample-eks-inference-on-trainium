@@ -15,6 +15,7 @@ spec:
         neuron.amazonaws.com/neuron-device: "true"
 %{ else ~}
         nvidia.com/gpu: "true"
+        nvidia.com/gpu.present: "true"
 %{ endif ~}
     spec:
       taints:

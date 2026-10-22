@@ -1,16 +1,31 @@
-# RayService for gpt-oss-20b on one trn2.3xlarge (1 device = 4 logical
-# NeuronCores, TP4): Ray head on the x86 pool, one worker on the neuron-trn2-3xl
-# pool. The worker pulls the model dir from S3 (weights + the compile cache/ =
-# VLLM_CACHE_ROOT). The engine env below is the Step 1 trn2.3xlarge scenario -
-# the same values as the compile Job and the vLLM deployment, so the NEFFs are
-# cache hits.
+# RayService for gpt-oss-20b, TP4 on 1 Trainium2 device (4 logical NeuronCores),
+# on any trn2 size: Ray head on the x86 pool, one worker on a Trainium node. The worker claims its device through the Neuron DRA driver (the
+# ResourceClaimTemplate below), pulls the weights from S3, and reads the
+# compiled graphs from the shared Neuron cache (EFS) - compile them first with
+# the vllm-serving chart's compile mode and values-gpt-oss-trn2-tp4.yaml: ENGINE_ARGS
+# below are that file's engine flags, so the graphs are cache hits.
 #
 #   kubectl create configmap vllm-ray-app --from-file=ray/vllm_ray_app.py --dry-run=client -o yaml | kubectl apply -f -
-#   envsubst '$RAY_NEURON_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-trn2.yaml | kubectl apply -f -
+#   envsubst '$RAY_NEURON_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-gpt-oss-trn2-tp4.yaml | kubectl apply -f -
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: gpt-oss-trn2-tp4-ray-devices
+  namespace: default
+spec:
+  spec:
+    devices:
+      requests:
+        - name: devices
+          exactly:
+            deviceClassName: neuron.aws.com
+            allocationMode: ExactCount
+            count: 1
+---
 apiVersion: ray.io/v1
 kind: RayService
 metadata:
-  name: gpt-oss-20b-trn2-3xl-ray
+  name: gpt-oss-trn2-tp4-ray
   namespace: default
 spec:
   serviceUnhealthySecondThreshold: 1800
@@ -72,26 +87,16 @@ spec:
                 memory: "16G"
             env:
             - name: PYTHONPATH
-              value: "/opt/conda/lib/python3.13/site-packages:/home/ray/python:$PYTHONPATH"
+              value: "/opt/conda/lib/python3.14/site-packages:/home/ray/python:$PYTHONPATH"
             - name: VLLM_PORT
               value: "8004"
             - name: PORT
               value: "8000"
             # The Serve controller imports the app on the head to build the
             # deployment graph, so vllm_ray_app.py reads these here too. Must
-            # match the worker values.
+            # match the worker values. (The engine flags are only read on the worker.)
             - name: MODEL_ID
               value: "/tmp/models/gpt-oss-20b"
-            - name: TENSOR_PARALLEL_SIZE
-              value: "4"
-            - name: MAX_NUM_SEQS
-              value: "4"
-            - name: MAX_NUM_BATCHED_TOKENS
-              value: "8192"
-            - name: MAX_MODEL_LEN
-              value: "16384"
-            - name: HF_OVERRIDES
-              value: '{"quantization_config": {}}'
             - name: NEURON_CORES
               value: "4"
             - name: RAY_memory_monitor_refresh_ms
@@ -123,7 +128,10 @@ spec:
           labels:
             ray.io/node-type: worker
         spec:
-          serviceAccountName: model-reader
+          serviceAccountName: s3-reader
+          resourceClaims:
+          - name: devices
+            resourceClaimTemplateName: gpt-oss-trn2-tp4-ray-devices
           affinity:
             podAffinity:
               preferredDuringSchedulingIgnoredDuringExecution:
@@ -144,12 +152,13 @@ spec:
               - |
                 set -e
                 # sync (CRT) reconciles against S3: warm NVMe -> transfers nothing,
-                # fresh node -> full pull, partial -> just the gap. Weights + cache/.
+                # fresh node -> full pull, partial -> just the gap. Weights only.
                 aws configure set s3.preferred_transfer_client crt
-                aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b/" /tmp/models/gpt-oss-20b/ --exclude ".ready/*"
+                aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b/" /tmp/models/gpt-oss-20b/ --exclude ".ready/*" --exclude "cache*" --exclude "original/*" --exclude "metal/*"
                 # This init container runs as root, but the Ray worker runs as the
-                # non-root `ray` user, and the plugin writes NEFFs / lock files into
-                # VLLM_CACHE_ROOT (inside the model dir) - make it writable by the ray user.
+                # non-root `ray` user, and the plugin copies graphs from the shared
+                # cache and writes lock files into VLLM_CACHE_ROOT (inside the model
+                # dir) - make it writable by the ray user.
                 mkdir -p /tmp/models/gpt-oss-20b/cache
                 chmod -R a+rwX /tmp/models/gpt-oss-20b
                 ls -la /tmp/models/gpt-oss-20b/
@@ -177,31 +186,38 @@ spec:
               mountPath: /tmp/models
             - mountPath: /dev/shm
               name: dshm
+            - name: neuron-cache
+              mountPath: /neuron-cache
             resources:
-              # The trn2.3xlarge's single device (4 logical NeuronCores); cpu/memory
-              # stay below the node's allocatable (12 vCPU / 128 GiB) so it schedules.
+              # One Trainium2 device (4 logical NeuronCores), from the DRA claim;
+              # cpu/memory are one device's share (a trn2.3xlarge: 12 vCPU / 128 GiB).
               limits:
                 cpu: 10
                 memory: "112Gi"
-                aws.amazon.com/neuron: "1"
               requests:
                 cpu: 10
                 memory: "112Gi"
-                aws.amazon.com/neuron: "1"
+              claims:
+              - name: devices
             env:
-            # Model and serve configuration (must match the head).
+            # Model (must match the head) and engine flags: values-gpt-oss-trn2-tp4.yaml's,
+            # as the vllm-serving chart renders them.
             - name: MODEL_ID
               value: "/tmp/models/gpt-oss-20b"
-            - name: MAX_MODEL_LEN
-              value: "16384"
-            - name: MAX_NUM_SEQS
-              value: "4"
-            - name: MAX_NUM_BATCHED_TOKENS
-              value: "8192"
-            - name: TENSOR_PARALLEL_SIZE
-              value: "4"
-            - name: HF_OVERRIDES
-              value: '{"quantization_config": {}}'
+            - name: ENGINE_ARGS
+              value: '["--tokenizer", "/tmp/models/gpt-oss-20b", "--tensor-parallel-size=4", "--max-model-len=8192", "--max-num-seqs=8", "--max-num-batched-tokens=512", "--no-enable-prefix-caching", "--no-disable-hybrid-kv-cache-manager", "--hf-overrides={\"quantization_config\": {}}", "--additional-config={\"neuron_config\": {\"decode_context_length_buckets\": [512, 1024]}}"]'
+            # Shared Neuron cache on EFS, as the vllm-serving chart sets it: LNC 2,
+            # the trn2 target, native NEFFs and XLA/NKI graphs.
+            - name: NEURON_LOGICAL_NC_CONFIG
+              value: "2"
+            - name: NEURON_PLATFORM_TARGET_OVERRIDE
+              value: trn2
+            - name: VLLM_NEURON_BACKEND
+              value: neuron_native
+            - name: TORCH_NEURONX_NEFF_CACHE_DIR
+              value: /neuron-cache/native-neff
+            - name: NEURON_LIBTORCH_REMOTE_CACHE
+              value: /neuron-cache/xla
             - name: NEURON_CORES
               value: "4" # NeuronCores each replica claims (TP4)
             - name: NEURON_RT_ASYNC_EXEC
@@ -212,17 +228,17 @@ spec:
             # required for single-instance TP (collectives use NeuronLink).
             - name: NEURON_SKIP_EFA_AFFINITY
               value: "1"
-            # gpt-oss needs long compile/execute timeouts (first start compiles).
+            # Same timeouts as values-gpt-oss-trn2-tp4.yaml.
             - name: VLLM_NEURON_COMPILATION_TIMEOUT
               value: "1200"
             - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
               value: "1200"
-            # Compile cache inside the model dir (mirrors s3://<bucket>/gpt-oss-20b/cache/).
+            # Node-local compile cache inside the model dir (graphs copied from EFS).
             - name: VLLM_CACHE_ROOT
               value: "/tmp/models/gpt-oss-20b/cache"
             # system path
             - name: PYTHONPATH
-              value: "/opt/conda/lib/python3.13/site-packages:/home/ray/python:$PYTHONPATH"
+              value: "/opt/conda/lib/python3.14/site-packages:/home/ray/python:$PYTHONPATH"
             - name: VLLM_PORT
               value: "8004"
             - name: PORT
@@ -237,8 +253,8 @@ spec:
             - name: RAY_memory_usage_threshold
               value: "0.95" # Set memory threshold
           nodeSelector:
-            # Pin to the neuron-trn2-3xl Karpenter NodePool by name.
-            karpenter.sh/nodepool: neuron-trn2-3xl
+            # Any Trainium node (any trn2 size): the device claim decides what fits.
+            neuron.amazonaws.com/neuron-device: "true"
           tolerations:
           - key: "aws.amazon.com/neuron"
             operator: "Exists"
@@ -259,3 +275,6 @@ spec:
             hostPath:
               path: /mnt/k8s-disks/0
               type: Directory
+          - name: neuron-cache
+            persistentVolumeClaim:
+              claimName: neuron-cache

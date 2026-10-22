@@ -5,58 +5,40 @@
 
 # name = "demo-neuron-eks"
 
-# AWS region - where your Capacity Blocks are (README: Infrastructure §2).
+# AWS region - where your Capacity Block is (README: Section 1, step 1).
 region = "us-east-2"
 
-# ML Capacity Blocks (README: Infrastructure §2), keyed by the static NodePool to create for each.
-# Fill in from: aws ec2 describe-capacity-reservations --filters Name=state,Values=active,scheduled
+# ML Capacity Blocks (README: Section 1, step 2), keyed by the static NodePool to create for
+# each: neuron-$TRN, the node pool the vllm-serving values file for $TRN uses.
+# Fill in from: scripts/list-reserved-capacity-blocks.py
 capacity_blocks_nodepools = {
-  "neuron-trn2-48xl" = {
+  "neuron-trn2-3xl" = {
     reservation_id = "cr-..."
-    instance_type  = "trn2.48xlarge"
+    instance_type  = "trn2.3xlarge"
     az             = "us-east-2b"
     node_count     = 1
     hardware       = "neuron"
   }
-  "gpu-p5-48xl" = {
-    reservation_id = "cr-..."
-    instance_type  = "p5.48xlarge"
-    az             = "us-east-2a"
-    node_count     = 1
-    hardware       = "gpu"
-  }
-  # Single-accelerator nodes (vllm-serving/values-trn2-3xl.yaml, values-p5-4xl.yaml):
-  # "neuron-trn2-3xl" = {
+  # 16 Trainium2 devices (vllm-serving/values-trn2-48xl.yaml):
+  # "neuron-trn2-48xl" = {
   #   reservation_id = "cr-..."
-  #   instance_type  = "trn2.3xlarge"
+  #   instance_type  = "trn2.48xlarge"
   #   az             = "..."
   #   node_count     = 1
   #   hardware       = "neuron"
   # }
-  # "gpu-p5-4xl" = {
-  #   reservation_id = "cr-..."
-  #   instance_type  = "p5.4xlarge"
-  #   az             = "..."
-  #   node_count     = 1
-  #   hardware       = "gpu"
-  # }
 }
 
 # Reuse an existing model-cache bucket (same region and account), e.g. one from an earlier
-# cluster, so its weights and compile cache are reused. Terraform never modifies or deletes it.
+# cluster, so its weights and benchmark results are reused. Terraform never modifies or deletes it.
 # Empty or unset: create a new bucket.
 # existing_cache_bucket = "neuron-eks-demo"
 
-# Models to stage in S3 (README: Infrastructure §1): name -> HuggingFace checkpoint. The name is the
+# Models to stage in S3: name -> HuggingFace checkpoint. The name is the
 # model's folder: s3://<bucket>/<name>/ and /tmp/models/<name>/ on nodes.
 # models = {
 #   "gpt-oss-20b" = "openai/gpt-oss-20b"
 # }
-
-# Serving images (README: Infrastructure §1), copied to ECR; each is the base of a Ray Serve image.
-# vllm_neuron_image = "public.ecr.aws/neuron/pytorch-inference-vllm-neuronx:0.24.0.1.1.0-neuronx-py313-sdk2.32.0-ubuntu24.04"
-# vllm_gpu_image    = "vllm/vllm-openai:v0.24.0"
-# ray_version       = "2.56.1"
 
 # name               = "demo-neuron-eks"   # EKS cluster name / resource prefix
 # kubernetes_version = "1.36"
