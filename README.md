@@ -597,7 +597,6 @@ into the **Inference** folder:
 | **Neuron (neuron-monitor)** | NeuronCore utilization, device memory, execution latency and errors per trn2 node |
 | **GPU (DCGM)** | GPU utilization, memory, power and temperature per GPU node |
 | **Benchmark** | One endpoint under load (Section 4): TTFT and inter-token latency, tokens/s, running vs waiting requests, prefill vs decode time, KV-cache and accelerator utilization, $ per 1M tokens at peak. Pick the endpoint and set its node $/hr at the top. |
-| **Benchmark scoreboard** | A Trainium and a GPU endpoint side by side while they're benchmarked: TTFT and inter-token latency, tokens/s, running vs waiting requests, accelerator and KV-cache utilization, $ per 1M tokens at peak. Pick one endpoint per side and set each node's $/hr at the top. |
 | **Ray Cluster / Ray Serve / Ray Serve Deployment (optional Ray deployment)** | Ray cluster, Serve applications and replicas. Empty unless the optional Ray step is running. |
 
 ```bash
