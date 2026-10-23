@@ -1,5 +1,5 @@
 # gpt-oss-20b on one NVIDIA L40S (g6e.2xlarge: 1x L40S 48 GB, 8 vCPU, 64 GiB):
-# 1 replica x TP1, on the on-demand/Spot gpu-g6e node pool (no reservation).
+# 1 replica x TP1, on the on-demand gpu-g6e node pool (no reservation).
 # MXFP4 experts (vLLM's default for the published checkpoint).
 # Modes: serve and bench (compile and warmup are Neuron only).
 hardware: gpu

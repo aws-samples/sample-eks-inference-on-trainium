@@ -49,7 +49,7 @@ and up to 16 fit a `trn2.48xlarge` (16 devices).
 
 The same platform also serves it on NVIDIA GPUs with the upstream vLLM
 container: on the `gpu-g6e` node pool (one
-L40S per node, on-demand or Spot, no reservation needed), or on a p5 (H100)
+L40S per node, on-demand, no reservation needed), or on a p5 (H100)
 Capacity Block. Each step below notes what changes on GPU.
 
 ### 1. Reserve Trainium capacity
@@ -81,8 +81,9 @@ scripts/list-reserved-capacity-blocks.py
 <details>
 <summary><b>On GPU</b> (optional)</summary>
 
-The `gpu-g6e` pool needs no reservation. For an H100, reserve a p5
-block the same way (`--instance-types p5.4xlarge`).
+Reserve a p5 (H100) block the same way (`--instance-types p5.4xlarge`). The
+dynamic `gpu-g6e` pool (L40S, on-demand) needs no reservation, if you'd
+rather use it.
 
 </details>
 
@@ -113,9 +114,20 @@ capacity_blocks_nodepools = {
 <details>
 <summary><b>On GPU</b> (optional)</summary>
 
-For a p5 block, add an entry with `hardware = "gpu"` and set
-`nodepool` in [`values-gpt-oss-p5-tp1.yaml`](vllm-serving/values-gpt-oss-p5-tp1.yaml) to its key.
-No entry needed for g6e capacity, just ensure that it is available in the region.
+Add an entry for the p5 block. Its key is the node pool that
+[`values-gpt-oss-p5-tp1.yaml`](vllm-serving/values-gpt-oss-p5-tp1.yaml) pins to (`nodepool: gpu-p5-4xl`):
+
+```hcl
+  "gpu-p5-4xl" = {
+    reservation_id = "cr-..."
+    instance_type  = "p5.4xlarge"
+    az             = "us-east-2a"
+    node_count     = 1
+    hardware       = "gpu"
+  }
+```
+
+No entry needed for g6e capacity, just ensure that capacity is available in the region.
 
 </details>
 
@@ -174,7 +186,7 @@ terraform -chdir=terraform apply
 - **NVIDIA GPUs:** the NVIDIA GPU Operator (DCGM exporter, node labels), the
   NVIDIA DRA driver (GPUs claimed like Trainium devices), a `gpu` NodeClass
   (EKS-optimized NVIDIA AMI) and a dynamic `gpu-g6e` pool: the g6e family
-  (NVIDIA L40S), on-demand or Spot, tainted like the Trainium pool.
+  (NVIDIA L40S), on-demand, tainted like the Trainium pool.
 
 **Model storage** ([`s3.tf`](terraform/s3.tf), [`efs.tf`](terraform/efs.tf))
 
@@ -313,7 +325,7 @@ cat vllm-serving/values-$CFG.yaml
 <details>
 <summary><b>On GPU</b> (optional)</summary>
 
-Use `CFG=gpt-oss-g6e-tp1` (or `gpt-oss-p5-tp1`) and
+Use `CFG=gpt-oss-p5-tp1` (or `gpt-oss-g6e-tp1`) and
 `image=$VLLM_GPU_IMAGE` in the commands below, and skip step 1: compile and
 warmup are Neuron only (vLLM builds its CUDA graphs at startup).
 
@@ -404,10 +416,10 @@ kubectl get resourceclaims
 <summary><b>On GPU</b> (optional)</summary>
 
 The same release with the GPU config and image. The pod claims one GPU through
-the NVIDIA DRA driver, and Karpenter launches a g6e node for it:
+the NVIDIA DRA driver on the p5 block's node:
 
 ```bash
-export CFG=gpt-oss-g6e-tp1
+export CFG=gpt-oss-p5-tp1
 helm upgrade --install $CFG vllm-serving -f vllm-serving/values-$CFG.yaml \
   --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_GPU_IMAGE
 
@@ -501,7 +513,7 @@ graphs at startup):
 
 ```bash
 export RAY_GPU_IMAGE="$(terraform -chdir=terraform output -json serving_images | jq -r '."ray-gpu"')"
-export CFG=gpt-oss-g6e-tp1
+export CFG=gpt-oss-p5-tp1
 helm upgrade --install $CFG-ray rayserve-serving -f vllm-serving/values-$CFG.yaml \
   --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$RAY_GPU_IMAGE
 
@@ -679,13 +691,13 @@ kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$CFG-ben
 
 The same command with the GPU config and image. The Job runs on its
 own GPU node, so the endpoint can keep running. `bench.deviceHourlyUsd` is the
-node's $/hr, one GPU per g6e node:
+node's $/hr, one GPU per p5.4xlarge:
 
 ```bash
-export CFG=gpt-oss-g6e-tp1
+export CFG=gpt-oss-p5-tp1
 helm upgrade --install $CFG-bench vllm-serving -f vllm-serving/values-$CFG.yaml --set mode=bench \
   --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_GPU_IMAGE \
-  --set bench.deviceHourlyUsd=<$/hr of the g6e node>
+  --set bench.deviceHourlyUsd=<$/hr of the p5.4xlarge>
 ```
 
 </details>
