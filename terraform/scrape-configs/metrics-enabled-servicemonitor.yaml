@@ -22,3 +22,12 @@ spec:
       interval: 1s
       scrapeTimeout: 1s
       scheme: http
+      # A finished pod (e.g. a bench Job's) stays in its Service as a not-ready
+      # address, and Prometheus scrapes those too: once its IP is reused by the
+      # next pod on the node, that pod's metrics also show up under the old
+      # Service. The operator's built-in pod-phase drop misses them (the pod
+      # phase Prometheus sees stays Running), so scrape ready addresses only.
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_endpoint_ready]
+          regex: "false"
+          action: drop

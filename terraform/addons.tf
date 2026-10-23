@@ -41,6 +41,13 @@ module "data_addons" {
           # the dashboards match GPUs to endpoints by node (hostname).
           - name: DCGM_EXPORTER_KUBERNETES_ENABLE_DRA
             value: "true"
+        # Collectors: scrape-configs/dcgm-metrics.csv (adds SM activity/occupancy, power limit,
+        # max clock and throttling counters the GPU dashboard uses).
+        config:
+          name: dcgm-metrics
+          create: true
+          data: |
+            ${indent(6, file("${path.module}/scrape-configs/dcgm-metrics.csv"))}
         serviceMonitor:
           enabled: true
           interval: 1s
