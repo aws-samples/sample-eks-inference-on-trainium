@@ -764,3 +764,11 @@ terraform -chdir=terraform destroy
 > nodes, the ECR images, the EFS compile cache, the CloudWatch log group and the
 > S3 bucket (weights, benchmark results). Back up anything you want to keep from S3 first. Capacity Blocks are
 > paid for their full term whether or not instances run.
+
+## Security
+
+See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+
+## License
+
+This library is licensed under the MIT-0 License. See the LICENSE file.
