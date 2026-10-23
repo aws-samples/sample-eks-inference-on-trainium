@@ -135,7 +135,7 @@ bench:
     - name: in512-out256
       inputLen: 512
       outputLen: 256
-  numPrompts: ""             # per load level; empty = 2.5 x vllm.maxNumSeqs (at least 32): saturates, levels up to ~1.2 x maxNumSeqs
+  numPrompts: ""             # per load level; empty = 1.5 x vllm.maxNumSeqs (at least 32): saturates, levels up to ~maxNumSeqs
   workloadIters: 6           # load levels, including the serial and batch runs
   # Latency SLA per request, in ms (ttft, tpot, e2el), for vLLM's goodput. A
   # level meets the SLA when sloPercent of its requests do; the summary reports

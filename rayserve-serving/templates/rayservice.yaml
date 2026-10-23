@@ -34,7 +34,7 @@ spec:
       template:
         metadata:
           labels:
-            {{- include "rayserve-serving.labels" . | nindent 12 }}
+            {{- include "rayserve-serving.rayPodLabels" . | nindent 12 }}
         spec:
           {{- include "rayserve-serving.podSecurityContext" . | nindent 10 }}
           containers:
@@ -86,7 +86,7 @@ spec:
         template:
           metadata:
             labels:
-              {{- include "rayserve-serving.labels" . | nindent 14 }}
+              {{- include "rayserve-serving.rayPodLabels" . | nindent 14 }}
           spec:
             serviceAccountName: {{ .Values.serviceAccounts.serve }}
             {{- include "rayserve-serving.podSecurityContext" . | nindent 12 }}

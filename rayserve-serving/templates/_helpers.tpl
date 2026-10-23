@@ -25,6 +25,15 @@ app: {{ .Release.Name }}
 model: {{ .Values.model }}
 {{- end -}}
 
+{{/* Labels of the Ray head and worker pods: the common labels without
+app.kubernetes.io/name and managed-by, which KubeRay sets on its pods and
+selects them by (<release>-head-svc). */}}
+{{- define "rayserve-serving.rayPodLabels" -}}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app: {{ .Release.Name }}
+model: {{ .Values.model }}
+{{- end -}}
+
 {{/* Pod selector labels */}}
 {{- define "rayserve-serving.selectorLabels" -}}
 app: {{ .Release.Name }}
