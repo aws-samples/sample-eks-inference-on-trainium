@@ -669,8 +669,8 @@ The test is set in the values file's `bench` block (defaults in
 | Value | Default | Sets |
 |---|---|---|
 | `bench.workloads` | 512 in / 256 out | Prompt and output lengths (random tokens). Set them to your traffic. |
-| `bench.numPrompts` | 1.5x `maxNumSeqs` (min 32) | Requests per level. The default saturates the batch pass, so requests queue, and spreads the levels up to about `maxNumSeqs`. The serial pass runs them one at a time too, so this sets most of the Job's duration: raise it for more levels past saturation. |
-| `bench.workloadIters` | 6 | Load levels, including the serial and batch passes |
+| `bench.numPrompts` | 3x `maxNumSeqs` (min 32) | Requests per level. The default saturates the batch pass, so requests queue, and spreads the levels up to about `maxNumSeqs`. The serial pass runs them one at a time too, so this sets most of the Job's duration: raise it for more levels past saturation. |
+| `bench.workloadIters` | 8 | Load levels, including the serial and batch passes |
 | `bench.slo`, `bench.sloPercent` | TTFT 1000 ms, TPOT 50 ms; 95% | The latency SLA, and the share of requests that must meet it |
 | `bench.deviceHourlyUsd` | – | $/hr of one device, for $ per 1M output tokens |
 

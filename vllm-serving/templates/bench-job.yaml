@@ -4,8 +4,8 @@
 {{- $b := .Values.bench }}
 {{- $job := printf "%s-r%d" .Release.Name .Release.Revision | trunc 63 | trimSuffix "-" }}
 {{- /* bench.workloads -> --bench-params: one exploration per input/output length. */}}
-{{- /* Requests per load level: bench.numPrompts, else 1.5 x maxNumSeqs (at least 32): the batch run saturates the engine (requests queue), and the levels in between reach about maxNumSeqs. The serial run sends them one at a time too, so this sets most of the Job's duration. */}}
-{{- $numPrompts := $b.numPrompts | default (max 32 (mulf 1.5 .Values.vllm.maxNumSeqs | ceil | int)) | int }}
+{{- /* Requests per load level: bench.numPrompts, else 3 x maxNumSeqs (at least 32): the batch run saturates the engine (requests queue), and the levels in between reach about maxNumSeqs. The serial run sends them one at a time too, so this sets most of the Job's duration. */}}
+{{- $numPrompts := $b.numPrompts | default (max 32 (mulf 3 .Values.vllm.maxNumSeqs | ceil | int)) | int }}
 {{- $params := list }}
 {{- range $w := $b.workloads }}
 {{- $params = append $params (dict "_benchmark_name" $w.name "random_input_len" $w.inputLen "random_output_len" $w.outputLen "num_prompts" $numPrompts) }}
