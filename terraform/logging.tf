@@ -7,6 +7,7 @@
 ################################################################################
 
 resource "aws_cloudwatch_log_group" "containers" {
+  #checkov:skip=CKV_AWS_338:Container logs of a short-lived benchmark cluster, kept for debugging only; 14 days keeps CloudWatch storage cost low.
   name              = "/aws/eks/${local.name}/containers"
   retention_in_days = 14
 

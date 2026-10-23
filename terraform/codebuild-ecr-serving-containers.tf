@@ -57,9 +57,15 @@ resource "aws_ecr_repository" "image" {
   image_scanning_configuration {
     scan_on_push = true
   }
+
+  # Encrypt images at rest with KMS (the AWS managed key aws/ecr).
+  encryption_configuration {
+    encryption_type = "KMS"
+  }
 }
 
 resource "aws_codebuild_project" "images" {
+  #checkov:skip=CKV_AWS_316:docker build/push needs the Docker daemon, which CodeBuild only runs in privileged mode. The project only builds the Dockerfiles in container-images/.
   name         = "${local.name}-serving-images"
   description  = "Build an image folder of terraform/container-images into ECR"
   service_role = aws_iam_role.codebuild.arn
@@ -104,9 +110,19 @@ resource "aws_iam_role_policy" "codebuild" {
     Version = "2012-10-17"
     Statement = [
       {
+        # GetAuthorizationToken has no resource-level permissions.
         Effect   = "Allow"
-        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "ecr:GetAuthorizationToken"]
+        Action   = ["ecr:GetAuthorizationToken"]
         Resource = "*"
+      },
+      {
+        # The project's build logs: /aws/codebuild/<project>.
+        Effect = "Allow"
+        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = [
+          "arn:${data.aws_partition.current.partition}:logs:${local.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/codebuild/${aws_codebuild_project.images.name}",
+          "arn:${data.aws_partition.current.partition}:logs:${local.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/codebuild/${aws_codebuild_project.images.name}:*",
+        ]
       },
       {
         Effect = "Allow"
@@ -173,6 +189,9 @@ resource "null_resource" "build_image" {
   }
 
   lifecycle {
+    # A replaced repository (e.g. a change to its encryption) starts empty, under
+    # the same URI: rebuild into it.
+    replace_triggered_by = [aws_ecr_repository.image[each.key]]
     precondition {
       condition     = contains(["neuron", "gpu"], each.value.hardware)
       error_message = "container-images/${each.key}/Dockerfile needs a 'LABEL hardware=neuron' or 'LABEL hardware=gpu' line."
