@@ -16,7 +16,7 @@ resource "aws_cloudwatch_log_group" "containers" {
 # Write-only to that one log group (the group itself is Terraform's, so
 # retention applies and destroy removes it).
 resource "aws_iam_policy" "fluent_bit" {
-  name        = "${local.name}-fluent-bit"
+  name        = "${local.iam_name}-fluent-bit"
   description = "Fluent Bit: write container logs to ${aws_cloudwatch_log_group.containers.name}."
 
   policy = jsonencode({

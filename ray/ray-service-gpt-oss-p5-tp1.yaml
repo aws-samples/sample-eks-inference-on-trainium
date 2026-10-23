@@ -6,7 +6,7 @@
 # chart renders them.
 #
 #   kubectl create configmap vllm-ray-app --from-file=ray/vllm_ray_app.py --dry-run=client -o yaml | kubectl apply -f -
-#   envsubst '$RAY_GPU_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-p5.yaml | kubectl apply -f -
+#   envsubst '$RAY_GPU_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-gpt-oss-p5-tp1.yaml | kubectl apply -f -
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
 metadata:

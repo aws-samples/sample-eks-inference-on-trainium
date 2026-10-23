@@ -1,0 +1,6 @@
+apiVersion: v2
+name: rayserve-serving
+description: Deploy one vLLM model on Ray Serve (RayService), or AOT-compile (mode=compile) and warm it up (mode=warmup) for Neuron
+type: application
+version: 0.1.0
+appVersion: "2.56.1"

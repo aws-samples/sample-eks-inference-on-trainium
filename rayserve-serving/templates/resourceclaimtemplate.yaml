@@ -1,0 +1,41 @@
+{{- include "rayserve-serving.validate" . }}
+{{- if include "rayserve-serving.onDevice" . }}
+{{- $n := int .Values.resources.devices }}
+# The release's devices, from the hardware's DRA driver: each pod gets its own
+# claim for resources.devices devices.
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: {{ include "rayserve-serving.claimTemplate" . }}
+  labels:
+    {{- include "rayserve-serving.labels" . | nindent 4 }}
+spec:
+  spec:
+    devices:
+      requests:
+        - name: devices
+          exactly:
+            deviceClassName: {{ include "rayserve-serving.deviceClass" . }}
+            allocationMode: ExactCount
+            count: {{ $n }}
+            {{- if eq .Values.hardware "neuron" }}
+            {{- with .Values.neuron.deviceIds }}
+            # Pinned devices (e.g. to compare neighbouring vs non-neighbouring pairs).
+            selectors:
+              - cel:
+                  expression: "device.attributes['neuron.aws.com'].deviceId in {{ toJson . }}"
+            {{- end }}
+            {{- end }}
+      {{- if and (eq .Values.hardware "neuron") (gt $n 1) }}
+      {{- /* Smallest connected group the Neuron driver publishes (1/4/8/16 on trn2.48xlarge) that fits. */}}
+      {{- $group := 16 }}
+      {{- range $g := list 8 4 1 }}{{ if le $n $g }}{{ $group = $g }}{{ end }}{{ end }}
+      # Trainium2: all from the same connected device group (on trn2.48xlarge's
+      # 4x4 torus a group of 4 is one ring of 4 devices), so tensor parallelism
+      # stays on neighbouring devices. NVIDIA GPUs on one node all share NVSwitch,
+      # so any N will do.
+      constraints:
+        - requests: ["devices"]
+          matchAttribute: {{ .Values.neuron.deviceGroupAttribute | default (printf "resource.aws.com/devicegroup%d_id" $group) | quote }}
+      {{- end }}
+{{- end }}

@@ -9,7 +9,7 @@
 # serving engine flags - engine warmup runs every graph once on the device, and
 # any graph not in the shared cache is compiled and added to it - then a short
 # `vllm bench serve` load run that must finish without failed requests. The results go next to the graph
-# manifest, in <neuronCache.mountPath>/manifests/<release>/.
+# manifest, in <neuronCache.mountPath>/<cache key>/manifests/<release>/.
 # Named <release>-r<revision>, like the compile Job.
 apiVersion: batch/v1
 kind: Job

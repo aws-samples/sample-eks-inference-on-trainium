@@ -36,7 +36,9 @@ module "data_addons" {
           - name: DCGM_EXPORTER_INTERVAL
             value: "1000"
           # Attribute GPU metrics to the pods holding them through DRA claims
-          # (pod/namespace labels), not device-plugin allocations.
+          # (pod/namespace labels), not device-plugin allocations. Not populated
+          # with the NVIDIA DRA driver here (no pod labels on the metrics), so
+          # the dashboards match GPUs to endpoints by node (hostname).
           - name: DCGM_EXPORTER_KUBERNETES_ENABLE_DRA
             value: "true"
         serviceMonitor:

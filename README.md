@@ -47,6 +47,11 @@ vLLM replica claims the Trainium2 devices it needs through the Neuron DRA
 driver, so one replica (TP4 on one device) fits a `trn2.3xlarge` (1 device),
 and up to 16 fit a `trn2.48xlarge` (16 devices).
 
+The same platform also serves it on NVIDIA GPUs with the upstream vLLM
+container: on the `gpu-g6e` node pool (one
+L40S per node, on-demand or Spot, no reservation needed), or on a p5 (H100)
+Capacity Block. Each step below notes what changes on GPU.
+
 ### 1. Reserve Trainium capacity
 
 Use [EC2 Capacity Blocks for ML](https://aws.amazon.com/ec2/capacityblocks/) to
@@ -73,6 +78,14 @@ Once your block is reserved, list it:
 scripts/list-reserved-capacity-blocks.py
 ```
 
+<details>
+<summary><b>On GPU</b> (optional)</summary>
+
+The `gpu-g6e` pool needs no reservation. For an H100, reserve a p5
+block the same way (`--instance-types p5.4xlarge`).
+
+</details>
+
 ### 2. Apply Terraform
 
 ```bash
@@ -97,10 +110,18 @@ capacity_blocks_nodepools = {
 }
 ```
 
+<details>
+<summary><b>On GPU</b> (optional)</summary>
+
+For a p5 block, add an entry with `hardware = "gpu"` and set
+`nodepool` in [`values-gpt-oss-p5-tp1.yaml`](vllm-serving/values-gpt-oss-p5-tp1.yaml) to its key.
+No entry needed for g6e capacity, just ensure that it is available in the region.
+
+</details>
+
 The other inputs have defaults. Override them in `terraform.tfvars` if needed
 (see [`variables.tf`](terraform/variables.tf)). The serving images are not
-inputs: each is a folder in [`terraform/container-images/`](terraform/container-images/) (see
-below):
+inputs: each is a folder in [`terraform/container-images/`](terraform/container-images/):
 
 ```bash
 terraform -chdir=terraform init
@@ -150,8 +171,10 @@ terraform -chdir=terraform apply
 - **AMIs:** an EC2NodeClass per AMI input: `x86-cpu-karpenter` (EKS-optimized
   standard) and `neuron` (EKS-optimized Neuron: drivers and runtime). The
   Capacity Block's reservation is attached to the `neuron` NodeClass.
-- The template also includes NVIDIA GPU support (GPU operator, NVIDIA DRA
-  driver, a `gpu` NodeClass and a dynamic `gpu-g6e` pool), unused in this demo.
+- **NVIDIA GPUs:** the NVIDIA GPU Operator (DCGM exporter, node labels), the
+  NVIDIA DRA driver (GPUs claimed like Trainium devices), a `gpu` NodeClass
+  (EKS-optimized NVIDIA AMI) and a dynamic `gpu-g6e` pool: the g6e family
+  (NVIDIA L40S), on-demand or Spot, tainted like the Trainium pool.
 
 **Model storage** ([`s3.tf`](terraform/s3.tf), [`efs.tf`](terraform/efs.tf))
 
@@ -193,12 +216,15 @@ terraform -chdir=terraform apply
   another image. The defaults:
   - `vllm-neuron`: the vLLM-Neuron DLC
   - `ray-neuron`: Ray Serve on the same DLC as `vllm-neuron`
-  - `vllm-gpu`, `ray-gpu`: the GPU equivalents
+  - `vllm-neuron-perf`: `vllm-neuron` with a patched vLLM Neuron plugin and NKI
+    library (faster MoE kernels), to compare against the stock one
+  - `vllm-gpu`, `ray-gpu`: the GPU equivalents, on the upstream vLLM image
 
   Tags are a hash of the folder, so any change is a new tag. `terraform apply`
   waits for the builds (a few minutes each).
-- **Image warmer:** a DaemonSet per hardware, `image-warmer-neuron`, pre-pulls
-  every Neuron image onto each Trainium node as soon as it joins the cluster.
+- **Image warmer:** a DaemonSet per hardware, `image-warmer-neuron` and
+  `image-warmer-gpu`, pre-pulls every image of that hardware onto each of its
+  nodes as soon as the node joins the cluster.
 
 **Endpoint exposure** ([`addons.tf`](terraform/addons.tf))
 
@@ -210,11 +236,14 @@ terraform -chdir=terraform apply
 
 - **neuron-monitor** DaemonSet on every Trainium node: NeuronCore utilization,
   device memory, execution latency and errors, at 1 s.
-- **kube-prometheus-stack:** Prometheus (1 s scrapes of vLLM, neuron-monitor
-  and Ray, through the ServiceMonitors and PodMonitors in
+- **NVIDIA DCGM exporter** (NVIDIA GPU Operator) on every GPU node: GPU
+  utilization, memory, power and temperature, at 1 s, per GPU and node
+  (`hostname`). The operator also creates its ServiceMonitor.
+- **kube-prometheus-stack:** Prometheus (1 s scrapes of vLLM, neuron-monitor,
+  DCGM and Ray, through the ServiceMonitors and PodMonitors in
   [`scrape-configs/`](terraform/scrape-configs/)) and Grafana with the
   dashboards in [`grafana-dashboards/`](terraform/grafana-dashboards/) (vLLM,
-  Neuron, Ray, Benchmark), on an internal ALB, admin password generated into a
+  Neuron, GPU, Ray, Benchmark), on an internal ALB, admin password generated into a
   Secret.
 
 **Logging** ([`logging.tf`](terraform/logging.tf))
@@ -225,7 +254,21 @@ terraform -chdir=terraform apply
 
 </details>
 
-### 3. Check the infrastructure
+### 3. Export the outputs
+
+Export the Terraform outputs the next steps use:
+
+```bash
+export AWS_REGION="$(terraform -chdir=terraform output -raw region)"
+export S3_BUCKET_NAME="$(terraform -chdir=terraform output -raw model_storage_bucket)"
+export VLLM_NEURON_IMAGE="$(terraform -chdir=terraform output -json serving_images | jq -r '."vllm-neuron"')"
+export VLLM_GPU_IMAGE="$(terraform -chdir=terraform output -json serving_images | jq -r '."vllm-gpu"')"
+```
+
+`serving_images` lists every image built from `terraform/container-images/`; to serve
+another one, export its entry instead.
+
+### 4. Check the infrastructure
 
 ```bash
 $(terraform -chdir=terraform output -raw configure_kubectl)
@@ -235,26 +278,11 @@ kubectl get nodes -L karpenter.sh/nodepool,node.kubernetes.io/instance-type
 kubectl wait --for=condition=complete job -l app=model-weights --timeout=60m
 kubectl get resourceslices
 kubectl get pvc neuron-cache
-aws ecr describe-images --repository-name demo-neuron-eks/vllm-neuron --query 'imageDetails[].imageTags'
 ```
 
 Expect the Trainium node `Ready`, the weights Job complete, one
-ResourceSlice listing the trn2 node's Trainium device (Neuron DRA driver), the
-`neuron-cache` PVC `Bound` (the shared compile cache), the image tag in ECR and
-its CVE scan `COMPLETE` with counts by severity.
-
-### 4. Export the outputs
-
-Export the Terraform outputs the next sections use:
-
-```bash
-export AWS_REGION="$(terraform -chdir=terraform output -raw region)"
-export S3_BUCKET_NAME="$(terraform -chdir=terraform output -raw model_storage_bucket)"
-export VLLM_NEURON_IMAGE="$(terraform -chdir=terraform output -json serving_images | jq -r '."vllm-neuron"')"
-```
-
-`serving_images` lists every image built from `terraform/container-images/`; to serve
-another one, export its entry instead.
+ResourceSlice listing the trn2 node's Trainium devices (Neuron DRA driver), and the
+`neuron-cache` PVC `Bound` (the shared compile cache).
 
 ## Section 2: Serving inference
 
@@ -267,8 +295,8 @@ is documented in the chart's [`values.yaml`](vllm-serving/values.yaml). The
 |---|---|---|
 | `compile` | Builds the engine, compiling every graph into the shared cache, then exits | x86 CPU |
 | `warmup` | Builds, compiles, and starts vLLM engine, runs a smoke test, then exits | Trainium |
-| `serve` (default) | Deployes the vLLM endpoint: Deployment, Service, optional ALB ingress | Trainium |
-| `bench` | Benchmarks the config with `vllm bench sweep serve_workload` (Section 4) | Trainium |
+| `serve` (default) | Deploys the vLLM endpoint: Deployment, Service, optional ALB ingress | Trainium or GPU |
+| `bench` | Benchmarks the config with `vllm bench sweep serve_workload` (Section 4) | Trainium or GPU |
 
 Review serving parameters in the pre-set config:
 ```bash
@@ -276,7 +304,20 @@ export CFG=gpt-oss-trn2-tp4
 cat vllm-serving/values-$CFG.yaml
 ```
 
-When deploying with different serving paramters, use the CFG variable to diferentiate them.
+> **Important:** to serve with different parameters, create another values
+> file (`vllm-serving/values-<name>.yaml`) and set `CFG=<name>`. Every release,
+> compile cache manifest and benchmark result is named after `CFG`, so a new
+> config gets its own compile, endpoint and results instead of overwriting the
+> existing ones.
+
+<details>
+<summary><b>On GPU</b> (optional)</summary>
+
+Use `CFG=gpt-oss-g6e-tp1` (or `gpt-oss-p5-tp1`) and
+`image=$VLLM_GPU_IMAGE` in the commands below, and skip step 1: compile and
+warmup are Neuron only (vLLM builds its CUDA graphs at startup).
+
+</details>
 
 
 ### 1. Compile ahead of time
@@ -290,10 +331,11 @@ and shapes, the target, the logical NeuronCore size and the compiler version.
 The `vllm-serving` chart compiles and serves with the same parameters from the
 same values file, so serving finds the cached NEFFs.
 
-**Compile on CPU.** The plugin's CPU compile mode (`VLLM_NEURON_CPU_COMPILE=1`)
-builds the engine and compiles every graph for `trn2` without a device, so no
-Trainium time is spent compiling. The Job runs on the x86 node pool, on a node
-sized by `compile.cpu` and `compile.memory`:
+**Compile on CPU.** For this demo, compile on CPU. The plugin's CPU compile
+mode (`VLLM_NEURON_CPU_COMPILE=1`) builds the engine and compiles every graph
+for `trn2` without a device, so no Trainium time is spent compiling. The Job
+runs on the x86 node pool, on a node sized by `compile.cpu` and
+`compile.memory`:
 
 ```bash
 helm upgrade --install $CFG-compile vllm-serving -f vllm-serving/values-$CFG.yaml --set mode=compile \
@@ -303,10 +345,14 @@ kubectl logs -f -l app.kubernetes.io/instance=$CFG-compile -c compile --tail=-1
 kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$CFG-compile --timeout=180m
 ```
 
-**Warm up on Trainium.** A CPU compile proves that the graphs compile, not that
-they run. The warmup mode starts `vllm serve` on Trainium from the cached NEFFs,
-compiling any graph that isn't cached yet, then runs a short `vllm bench serve`
-load test that must finish with no failed requests.
+<details>
+<summary><b>Warm up on Trainium</b> (optional)</summary>
+
+A CPU compile proves that the graphs compile, not that they run. The warmup
+mode is the gate for that: it starts `vllm serve` on Trainium, compiles any NEFF
+still missing from the cache (all of them without the CPU compile), saves them
+and the traced graphs to EFS, then runs a short smoke test that must finish
+with no failed requests.
 
 ```bash
 helm upgrade --install $CFG-warmup vllm-serving -f vllm-serving/values-$CFG.yaml --set mode=warmup \
@@ -317,23 +363,30 @@ kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$CFG-war
 helm uninstall $CFG-warmup
 ```
 
-Both Jobs share their results through the `neuron-cache` EFS volume:
+</details>
 
-- **Compile** writes the NEFFs to the shared cache: the chart points the
-  plugin's NEFF cache at the volume (`TORCH_NEURONX_NEFF_CACHE_DIR=/neuron-cache/native-neff`).
-- **Warmup** does the same for any NEFF still missing, and also saves the
-  traced graphs (the plugin's precompile cache). The chart mounts the volume's
-  `torch-compile` directory over the plugin's precompile directory
-  (`<VLLM_CACHE_ROOT>/neuron/torch_compile`), so the packages land on EFS.
+Both Jobs save their results to the shared cache on the `neuron-cache` EFS
+volume, in a folder per image (`<key>`, a hash of the image URI), so two images
+never share compiled graphs:
+
+- **Compile on CPU** compiles the NEFFs into the cache: the chart points the
+  plugin's NEFF cache at the volume
+  (`TORCH_NEURONX_NEFF_CACHE_DIR=/neuron-cache/<key>/native-neff`).
+- **Warm up on Trainium** (optional) compiles any missing NEFF into the same
+  cache, and also saves the traced graphs: the plugin's precompile directory
+  (`<VLLM_CACHE_ROOT>/neuron/torch_compile`) is mounted from the volume's
+  `<key>/torch-compile`. Without the warmup, the first serving pod traces the
+  graphs and saves them there.
 
 Each Job also writes a manifest of the graphs it built to
-`/neuron-cache/manifests/<release>/`. With both caches in place, serving pods
+`/neuron-cache/<key>/manifests/<release>/`. With both in the cache, serving pods
 on any node skip tracing as well as compiling.
 
 ### 2. Deploy the vLLM endpoint
 
-The serve mode (default) creates a Deployment with the file's replicas and
-a Service in front of them. Each pod claims its Trainium device through the
+The serve mode (default) creates a Deployment with the file's replicas, a
+Service and, optionally (`--set ingress.enabled=true`), an internal ingress ALB
+to expose it inside the VPC. Each pod claims its Trainium device through the
 Neuron DRA driver (one ResourceClaim per pod) on any Trainium node with a free
 device, syncs the weights from S3 to the node's NVMe (init-container), and runs
 `vllm serve /tmp/models/gpt-oss-20b` with the same engine flags as the compile:
@@ -346,6 +399,23 @@ kubectl rollout status deploy/$CFG --timeout=60m
 kubectl get pods -l app=$CFG -o wide
 kubectl get resourceclaims
 ```
+
+<details>
+<summary><b>On GPU</b> (optional)</summary>
+
+The same release with the GPU config and image. The pod claims one GPU through
+the NVIDIA DRA driver, and Karpenter launches a g6e node for it:
+
+```bash
+export CFG=gpt-oss-g6e-tp1
+helm upgrade --install $CFG vllm-serving -f vllm-serving/values-$CFG.yaml \
+  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_GPU_IMAGE
+
+kubectl rollout status deploy/$CFG --timeout=60m
+kubectl get pods -l app=$CFG -o wide
+```
+
+</details>
 
 > **Cache miss?** Serving pods start from the compiled graphs on EFS. A graph
 > that isn't there (values that differ from what was compiled) is compiled on
@@ -362,50 +432,88 @@ curl -s localhost:8080/v1/chat/completions -H "Content-Type: application/json" \
   -d '{"model": "/tmp/models/gpt-oss-20b", "messages": [{"role": "user", "content": "What is AWS Trainium?"}]}' | jq
 ```
 
-#### Expose the endpoint
-
-With `ingress.enabled=true`, the chart adds an Ingress, and the AWS Load
-Balancer Controller provisions an **internal** ALB in the private subnets,
-reachable only from inside the VPC (`ingress.inboundCidrs`, the VPC CIDR by
-default). vLLM has no authentication of its own, so the chart has no
-internet-facing option. Add `ingress.certificateArn` for HTTPS.
-
-```bash
-helm upgrade --install $CFG vllm-serving -f vllm-serving/values-$CFG.yaml \
-  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_NEURON_IMAGE \
-  --set ingress.enabled=true
-
-ALB=$(kubectl get ingress $CFG -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-kubectl run alb-check --rm -i --restart=Never --image=curlimages/curl -- curl -s http://$ALB/v1/models
-```
-
 ### 3. (Optional) Deploy Ray Serve
 
-The same endpoint on Ray Serve, deployed with plain manifests: a Ray head on
-the x86 pool and a worker on a Trainium node, running
-[`vllm_ray_app.py`](ray/vllm_ray_app.py). The worker in
-[`ray-service-gpt-oss-trn2-tp4.yaml`](ray/ray-service-gpt-oss-trn2-tp4.yaml) claims one
-device through the Neuron DRA driver, and its `ENGINE_ARGS` are
-`values-gpt-oss-trn2-tp4.yaml`'s engine flags, so it serves the graphs compiled in
-step 1 from the shared cache. On a `trn2.3xlarge`, free the device first:
+Deploy the model with Ray Serve: the [`rayserve-serving`](rayserve-serving/)
+chart, similar to `vllm-serving` with Ray Serve as the server. It takes the same
+values file and has the same compile and warmup modes; serve mode (default) creates a
+RayService, with a Ray head on the x86 pool and a worker on a Trainium node
+running the vLLM engine in [`vllm_ray_app.py`](rayserve-serving/files/vllm_ray_app.py).
+The worker claims its device through the Neuron DRA driver.
+
+Ray runs its own image, `ray-neuron`, so it gets its own compiled graphs: the
+shared cache is keyed by image, so a different build never loads another
+image's graphs. On a `trn2.3xlarge`, free the device first:
 
 ```bash
-helm uninstall $CFG
-
+helm uninstall $CFG   # trn2.3xlarge only: frees its one device
 export RAY_NEURON_IMAGE="$(terraform -chdir=terraform output -json serving_images | jq -r '."ray-neuron"')"
-kubectl create configmap vllm-ray-app --from-file=ray/vllm_ray_app.py --dry-run=client -o yaml | kubectl apply -f -
-envsubst '$RAY_NEURON_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-gpt-oss-trn2-tp4.yaml | kubectl apply -f -
+```
 
-kubectl wait --for=condition=Ready rayservice/gpt-oss-trn2-tp4-ray --timeout=60m
-kubectl port-forward svc/gpt-oss-trn2-tp4-ray-serve-svc 8000:8000 &
+**Compile on CPU.** As in step 1, with the Ray image: it compiles the graphs
+into the Ray image's cache.
+
+```bash
+helm upgrade --install $CFG-ray-compile rayserve-serving -f vllm-serving/values-$CFG.yaml --set mode=compile \
+  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$RAY_NEURON_IMAGE
+
+kubectl logs -f -l app.kubernetes.io/instance=$CFG-ray-compile -c compile --tail=-1
+kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$CFG-ray-compile --timeout=180m
+```
+
+<details>
+<summary><b>Warm up on Trainium</b> (optional)</summary>
+
+As in step 1, the gate that the engine runs on Trainium, with the Ray image:
+
+```bash
+helm upgrade --install $CFG-ray-warmup rayserve-serving -f vllm-serving/values-$CFG.yaml --set mode=warmup \
+  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$RAY_NEURON_IMAGE
+
+kubectl logs -f -l app.kubernetes.io/instance=$CFG-ray-warmup -c warmup --tail=-1
+kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$CFG-ray-warmup --timeout=120m
+helm uninstall $CFG-ray-warmup
+```
+
+</details>
+
+**Serve.** The RayService loads the compiled graphs from the cache:
+
+```bash
+helm upgrade --install $CFG-ray rayserve-serving -f vllm-serving/values-$CFG.yaml \
+  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$RAY_NEURON_IMAGE
+
+kubectl wait --for=condition=Ready rayservice/$CFG-ray --timeout=60m
+kubectl port-forward svc/$CFG-ray-serve-svc 8000:8000 &
+
+curl -s localhost:8000/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model": "/tmp/models/gpt-oss-20b", "messages": [{"role": "user", "content": "What is AWS Trainium?"}]}' | jq
 ```
 
 The Ray dashboard is on port 8265 of the head:
-`kubectl port-forward svc/gpt-oss-trn2-tp4-ray-head-svc 8265:8265`.
+`kubectl port-forward svc/$CFG-ray-head-svc 8265:8265`.
+
+<details>
+<summary><b>On GPU</b> (optional)</summary>
+
+The same chart with the GPU config and image, no warmup (vLLM builds its CUDA
+graphs at startup):
+
+```bash
+export RAY_GPU_IMAGE="$(terraform -chdir=terraform output -json serving_images | jq -r '."ray-gpu"')"
+export CFG=gpt-oss-g6e-tp1
+helm upgrade --install $CFG-ray rayserve-serving -f vllm-serving/values-$CFG.yaml \
+  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$RAY_GPU_IMAGE
+
+kubectl wait --for=condition=Ready rayservice/$CFG-ray --timeout=60m
+kubectl port-forward svc/$CFG-ray-serve-svc 8001:8000 &
+```
+
+</details>
 
 ## Section 3: Observability
 
-Terraform already deployed the observability stack (Section 1, step 3). This
+Terraform already deployed the observability stack. This
 section walks through what it measures, how it's collected and where to look.
 
 ### 1. Metrics
@@ -441,7 +549,7 @@ by the ServiceMonitors and PodMonitors in [`scrape-configs/`](terraform/scrape-c
 |---|---|
 | [`metrics-enabled`](terraform/scrape-configs/metrics-enabled-servicemonitor.yaml) ServiceMonitor | Any Service labeled `metrics: enabled`, port `http`, `/metrics`. The vllm-serving chart sets that label, so every endpoint is scraped. |
 | [`neuron-monitor`](terraform/scrape-configs/neuron-monitor-servicemonitor.yaml) ServiceMonitor | neuron-monitor DaemonSet |
-| DCGM ServiceMonitor (created by the GPU operator) | DCGM exporter |
+| DCGM ServiceMonitor (created by the GPU operator once a GPU node joins) | DCGM exporter |
 | [`ray-head`](terraform/scrape-configs/ray-head-podmonitor.yaml) / [`ray-workers`](terraform/scrape-configs/ray-workers-podmonitor.yaml) PodMonitors | Ray pods (optional Ray deployment) |
 
 Check that every target is up:
@@ -451,17 +559,18 @@ kubectl get servicemonitor,podmonitor -A
 kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
 ```
 
-Open <http://localhost:9090/targets>: the vLLM replicas, neuron-monitor and
-DCGM should all be `UP`.
+Open <http://localhost:9090/targets>: the vLLM replicas and neuron-monitor
+(and DCGM, when GPU nodes run) should all be `UP`.
 
-**Logs** go to CloudWatch Logs (Fluent Bit, Section 1), not Prometheus. Query
+**Logs** go to CloudWatch Logs (Fluent Bit). Query
 a serving pod's logs, including from pods and nodes that are gone, with Logs
 Insights:
 
 ```bash
-aws logs start-query --log-group-name /aws/eks/demo-neuron-eks/containers \
-  --start-time $(date -v-1H +%s) --end-time $(date +%s) \
-  --query-string 'fields @timestamp, log | filter kubernetes.pod_name like /gpt-oss-20b/ | sort @timestamp desc | limit 50'
+QUERY_ID=$(aws logs start-query --log-group-name /aws/eks/demo-neuron-eks/containers \
+  --start-time $(( $(date +%s) - 3600 )) --end-time $(date +%s) --query queryId --output text \
+  --query-string "fields @timestamp, kubernetes.pod_name, log | filter kubernetes.pod_name like /^$CFG-/ | sort @timestamp desc | limit 50")
+sleep 10; aws logs get-query-results --query-id $QUERY_ID
 ```
 
 ### 3. Visualization
@@ -473,8 +582,9 @@ into the **Inference** folder:
 |---|---|
 | **vLLM** | What each endpoint delivers: TTFT, inter-token and end-to-end latency (p50/p95), output and prompt tokens/s, requests/s. Why it moves: running vs waiting requests, queue time, KV-cache usage, prefix-cache hits, preemptions. Pick endpoints with the **Endpoint** selector. |
 | **Neuron (neuron-monitor)** | NeuronCore utilization, device memory, execution latency and errors per trn2 node |
-| **GPU (DCGM)** | GPU utilization, memory, power and temperature per p5 node |
+| **GPU (DCGM)** | GPU utilization, memory, power and temperature per GPU node |
 | **Benchmark** | One endpoint under load (Section 4): TTFT and inter-token latency, tokens/s, running vs waiting requests, prefill vs decode time, KV-cache and accelerator utilization, $ per 1M tokens at peak. Pick the endpoint and set its node $/hr at the top. |
+| **Benchmark scoreboard** | A Trainium and a GPU endpoint side by side while they're benchmarked: TTFT and inter-token latency, tokens/s, running vs waiting requests, accelerator and KV-cache utilization, $ per 1M tokens at peak. Pick one endpoint per side and set each node's $/hr at the top. |
 | **Ray Cluster / Ray Serve / Ray Serve Deployment (optional Ray deployment)** | Ray cluster, Serve applications and replicas. Empty unless the optional Ray step is running. |
 
 ```bash
@@ -484,7 +594,7 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:3000 &
 ```
 
 Open <http://localhost:3000>, sign in as `admin` with the password printed above, then **Dashboards → Inference → vLLM**. Send some
-traffic (Section 2, step 3) and watch the latency and load rows react.
+traffic (Section 2, step 2) and watch the latency and load rows react.
 
 **Optional: reach Grafana without port-forwarding.** Grafana also has an
 Ingress on an internal ALB (VPC-only). To open it from your machine, make the
@@ -503,7 +613,6 @@ The ALB is replaced in a few minutes, and `ADDRESS` changes to `k8s-...`. Open
 password crosses the internet unencrypted; only `$MY_IP` can connect. Rerun the
 `annotate` if your IP changes. To close it again, rerun it with
 `scheme=internal` and `inbound-cidrs=10.0.0.0/16` (the VPC).
-
 
 ## Section 4: Benchmark
 
@@ -556,7 +665,7 @@ The Job claims its own Trainium device. On a `trn2.3xlarge` (one device),
 uninstall the endpoint first:
 
 ```bash
-helm uninstall $CFG
+helm uninstall $CFG   # trn2.3xlarge only: frees its one device
 helm upgrade --install $CFG-bench vllm-serving -f vllm-serving/values-$CFG.yaml --set mode=bench \
   --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_NEURON_IMAGE \
   --set bench.deviceHourlyUsd=<$/hr per device>
@@ -565,14 +674,31 @@ kubectl logs -f -l app.kubernetes.io/instance=$CFG-bench -c bench --tail=-1
 kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$CFG-bench --timeout=180m
 ```
 
+<details>
+<summary><b>On GPU</b> (optional)</summary>
+
+The same command with the GPU config and image. The Job runs on its
+own GPU node, so the endpoint can keep running. `bench.deviceHourlyUsd` is the
+node's $/hr, one GPU per g6e node:
+
+```bash
+export CFG=gpt-oss-g6e-tp1
+helm upgrade --install $CFG-bench vllm-serving -f vllm-serving/values-$CFG.yaml --set mode=bench \
+  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_GPU_IMAGE \
+  --set bench.deviceHourlyUsd=<$/hr of the g6e node>
+```
+
+</details>
+
 ### 3. Visualize the results
 
 **Client view: the Job's summary.** At the end, the Job prints one summary per
 workload, measured by the benchmark client:
 
 - **Latency:** TTFT, TPOT and end-to-end latency at concurrency 1.
-- **Max throughput:** output tokens/s, requests/s and requests in flight from
-  the batch pass.
+- **Max throughput:** output tokens/s, requests/s and requests in flight at
+  the level with the highest output tokens/s (the batch pass, or the level
+  before it once the batch is saturated).
 - **Within SLA:** the goodput. That is the highest output tokens/s at a level
   where at least `bench.sloPercent` of requests met the SLA, and the
   concurrency of that level.
@@ -618,8 +744,7 @@ Karpenter node pools first and waits until Karpenter has terminated their
 instances, then the cluster, and the VPC last.
 
 ```bash
-helm list -q | xargs -r -n1 helm uninstall
-kubectl delete rayservice --all
+helm list -q | xargs -r -n1 helm uninstall --wait
 terraform -chdir=terraform destroy
 ```
 

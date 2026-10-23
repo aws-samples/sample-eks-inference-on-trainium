@@ -14,12 +14,13 @@ spec:
         encrypted: true
         volumeSize: 500Gi
         volumeType: gp3
-  role: "${name}-karpenter-node"
+  role: "${node_role}"
+  # Only the node security group, like the managed node group: the EKS cluster
+  # security group carries the same kubernetes.io/cluster tag, and the AWS Load
+  # Balancer Controller won't register pods whose ENI has two tagged groups.
   securityGroupSelectorTerms:
     - tags:
         karpenter.sh/discovery: "${name}"
-    - tags:
-        kubernetes.io/cluster/${name}: owned
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: "${name}"

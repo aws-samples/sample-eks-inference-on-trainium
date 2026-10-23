@@ -104,7 +104,7 @@ resource "aws_vpc_endpoint" "s3" {
 
 # IAM policy: read/write the model cache bucket
 resource "aws_iam_policy" "s3_writer" {
-  name        = "${local.name}-s3-writer"
+  name        = "${local.iam_name}-s3-writer"
   description = "Read/write the model bucket: weights Job, Neuron compile Jobs, benchmark Jobs."
 
   policy = jsonencode({
@@ -162,7 +162,7 @@ resource "kubectl_manifest" "s3_writer_sa" {
 }
 
 resource "aws_iam_policy" "s3_reader" {
-  name        = "${local.name}-s3-reader"
+  name        = "${local.iam_name}-s3-reader"
   description = "Read-only access to the model cache bucket for serving pods."
 
   policy = jsonencode({

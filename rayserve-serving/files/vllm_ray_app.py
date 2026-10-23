@@ -1,11 +1,10 @@
-"""Ray Serve app for vLLM on Neuron (trn2) or GPU (p5), mounted into the
-RayService pods (ray-service-gpt-oss-trn2-tp4.yaml / ray-service-p5.yaml) from the
-vllm-ray-app ConfigMap.
+"""Ray Serve app for vLLM on Neuron (trn2) or GPU, mounted into the RayService
+pods by the rayserve-serving chart (its <release>-app ConfigMap).
 
-The engine is configured from the manifest's ENGINE_ARGS env var - the same
-engine flags the vllm-serving chart renders for the scenario - parsed by vLLM's
-own CLI parser, so on Neuron the engine config (and the NEFF cache keys) match
-the compile Job and `vllm serve`.
+The engine is configured from the ENGINE_ARGS env var - the same engine flags
+the chart's compile and warmup Jobs pass to `vllm serve` - parsed by vLLM's own
+CLI parser, so on Neuron the engine config (and the NEFF cache keys) match the
+graphs those Jobs compiled.
 
 We do NOT hand-roll the OpenAI response format. The deployment builds vLLM's own
 serving objects (OpenAIServingChat / OpenAIServingCompletion /
@@ -31,9 +30,9 @@ from ray import serve
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.entrypoints.openai.api_server import init_app_state
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
-from vllm.entrypoints.openai.cli_args import make_arg_parser
+from vllm.entrypoints.launchers.cli_args import make_arg_parser
 from vllm.entrypoints.openai.completion.protocol import CompletionRequest
-from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 from vllm.v1.engine.async_llm import AsyncLLM
@@ -55,7 +54,7 @@ app = FastAPI()
 
 def build_serve_args():
     """The same engine flags `vllm serve` gets in the standalone deployment:
-    ENGINE_ARGS is the vllm-serving chart's engine-args list for the scenario
+    ENGINE_ARGS is the chart's engine-args list for the scenario
     (JSON), so on Neuron the graphs - and the compile cache keys - are identical.
     Called only from __init__ (on the worker); make_arg_parser touches DeviceConfig.
     """

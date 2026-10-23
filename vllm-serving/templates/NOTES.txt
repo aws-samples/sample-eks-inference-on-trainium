@@ -19,14 +19,14 @@
   kubectl wait --for=condition=complete job -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=180m
 
   Compiled graphs: the neuron-cache EFS volume ({{ .Values.neuronCache.mountPath }}/{{ include "vllm-serving.cacheKey" . }}/native-neff, /xla; keyed by image),
-  manifest in {{ .Values.neuronCache.mountPath }}/manifests/{{ .Release.Name }}/
+  manifest in {{ .Values.neuronCache.mountPath }}/{{ include "vllm-serving.cacheKey" . }}/manifests/{{ .Release.Name }}/
 {{- else if eq .Values.mode "warmup" }}
 {{ .Release.Name }}: warmup Job on {{ .Values.resources.devices }} device(s)
 
   kubectl logs -f -l app.kubernetes.io/instance={{ .Release.Name }} -c warmup --tail=-1
   kubectl wait --for=condition=complete job -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=120m
 
-  Results (warmup-bench.json) and graph manifest: {{ .Values.neuronCache.mountPath }}/manifests/{{ .Release.Name }}/
+  Results (warmup-bench.json) and graph manifest: {{ .Values.neuronCache.mountPath }}/{{ include "vllm-serving.cacheKey" . }}/manifests/{{ .Release.Name }}/
 {{- else }}
 {{ .Release.Name }}: vllm bench sweep on {{ .Values.resources.devices }} device(s)
 

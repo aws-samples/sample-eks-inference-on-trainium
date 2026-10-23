@@ -852,7 +852,7 @@
     {
       "type": "timeseries",
       "title": "Accelerator utilization",
-      "description": "Busy time of the accelerators on the node hosting the selected endpoint. Both queries are filtered to that node, so only the matching one draws: NeuronCore (neuron-monitor, summed per core across Neuron runtimes, averaged over cores) or GPU (DCGM, averaged over GPUs).",
+      "description": "Busy time of each accelerator on the node hosting the selected endpoint, one line per device. Both queries are filtered to that node, so only the matching one draws: Trainium2 devices (neuron-monitor: NeuronCores summed across Neuron runtimes, averaged per device; only the devices busy at some point in the selected time range, so a one-device replica on a 16-device trn2.48xlarge draws one line) or GPUs (DCGM).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-1s"
@@ -890,8 +890,8 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "clamp_max(avg((sum by (pod, neuroncore) (neuroncore_utilization_ratio) * on (pod) group_left (node) max by (pod, node) (kube_pod_info{namespace=\"monitoring\"})) and on (node) max by (node) (kube_pod_info{namespace=\"default\", pod=~\"$endpoint-[a-z0-9]+-[a-z0-9]+\"})), 1)",
-          "legendFormat": "NeuronCore",
+          "expr": "clamp_max(avg by (neuron_device) ((sum by (pod, neuron_device, neuroncore) (neuroncore_utilization_ratio) * on (pod) group_left (node) max by (pod, node) (kube_pod_info{namespace=\"monitoring\"})) and on (node) max by (node) (kube_pod_info{namespace=\"default\", pod=~\"$endpoint-[a-z0-9]+-[a-z0-9]+\"})), 1) and on (neuron_device) max_over_time((avg by (neuron_device) ((sum by (pod, neuron_device, neuroncore) (neuroncore_utilization_ratio) * on (pod) group_left (node) max by (pod, node) (kube_pod_info{namespace=\"monitoring\"})) and on (node) max by (node) (kube_pod_info{namespace=\"default\", pod=~\"$endpoint-[a-z0-9]+-[a-z0-9]+\"})))[$__range:15s]) > 0.01",
+          "legendFormat": "Trainium2 device {{neuron_device}}",
           "refId": "A"
         },
         {
@@ -899,8 +899,8 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "avg(DCGM_FI_DEV_GPU_UTIL and on (hostname) label_replace(max by (node) (kube_pod_info{namespace=\"default\", pod=~\"$endpoint-[a-z0-9]+-[a-z0-9]+\"}), \"hostname\", \"$1\", \"node\", \"(.*)\")) / 100",
-          "legendFormat": "GPU",
+          "expr": "max by (gpu) (DCGM_FI_DEV_GPU_UTIL and on (hostname) label_replace(max by (node) (kube_pod_info{namespace=\"default\", pod=~\"$endpoint-[a-z0-9]+-[a-z0-9]+\"}), \"hostname\", \"$1\", \"node\", \"(.*)\")) / 100",
+          "legendFormat": "GPU {{gpu}}",
           "refId": "B"
         }
       ],

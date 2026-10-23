@@ -15,7 +15,10 @@ resource "helm_release" "kube_prometheus_stack" {
   version          = "69.7.4"
   namespace        = "monitoring"
   create_namespace = true
-  wait             = false
+  # Also makes destroy wait until the release's resources are gone, so the LB
+  # controller (depends_on below) is still running to delete Grafana's ALB.
+  wait    = true
+  timeout = 600
 
   values = [
     <<-EOT

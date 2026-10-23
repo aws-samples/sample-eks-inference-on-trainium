@@ -1,0 +1,129 @@
+{{- include "rayserve-serving.validate" . }}
+{{- if eq .Values.mode "serve" }}
+{{- $r := .Values.ray }}
+{{- $neuron := eq .Values.hardware "neuron" }}
+# Ray Serve (KubeRay RayService) running the vLLM engine in files/vllm_ray_app.py:
+# a head on the x86 pool (Ray's control plane, the HTTP proxy on 8000) and one
+# worker per replica on the accelerators. The worker is built like the compile
+# and warmup Jobs - same image, engine flags, env, shared cache and device claim -
+# so it loads the graphs they compiled.
+apiVersion: ray.io/v1
+kind: RayService
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "rayserve-serving.labels" . | nindent 4 }}
+spec:
+  # How long the app may stay unhealthy (e.g. starting, or compiling a graph
+  # missing from the cache) before KubeRay restarts the cluster.
+  serviceUnhealthySecondThreshold: {{ $r.unhealthySeconds }}
+  deploymentUnhealthySecondThreshold: {{ $r.unhealthySeconds }}
+  serveConfigV2: |
+    applications:
+      - name: {{ .Values.model }}
+        import_path: "vllm_ray_app:deployment"
+        route_prefix: "/"
+  rayClusterConfig:
+    rayVersion: {{ $r.version | quote }}
+    headGroupSpec:
+      rayStartParams:
+        dashboard-host: "0.0.0.0"
+        # No tasks or actors on the head: the engine runs on the workers.
+        num-cpus: "0"
+        num-gpus: "0"
+      template:
+        metadata:
+          labels:
+            {{- include "rayserve-serving.labels" . | nindent 12 }}
+        spec:
+          {{- include "rayserve-serving.podSecurityContext" . | nindent 10 }}
+          containers:
+            - name: head
+              image: {{ .Values.image }}
+              imagePullPolicy: IfNotPresent
+              lifecycle:
+                preStop:
+                  exec:
+                    command: ["/bin/sh", "-c", "ray stop"]
+              ports:
+                - {containerPort: 6379, name: gcs}
+                - {containerPort: 8265, name: dashboard}
+                - {containerPort: 10001, name: client}
+                - {containerPort: 8000, name: serve}
+                - {containerPort: 52365, name: dashboard-agent}
+                # Scraped by the ray-head PodMonitor (terraform/scrape-configs):
+                # autoscaler and dashboard metrics. KubeRay adds `metrics` (8080).
+                - {containerPort: 44217, name: as-metrics}
+                - {containerPort: 44227, name: dash-metrics}
+              resources:
+                requests: {cpu: {{ $r.head.cpu | quote }}, memory: {{ $r.head.memory }}}
+                limits: {memory: {{ $r.head.memory }}}
+              env:
+                {{- include "rayserve-serving.appEnv" . | nindent 16 }}
+              volumeMounts:
+                - {name: ray-logs, mountPath: /tmp/ray}
+                - {name: app, mountPath: /home/ray/python}
+          nodeSelector:
+            karpenter.sh/nodepool: {{ $r.head.nodepool }}
+          tolerations:
+            - {key: karpenter, operator: Exists, effect: NoSchedule}
+          volumes:
+            - {name: ray-logs, emptyDir: {}}
+            - {name: app, configMap: {name: {{ .Release.Name }}-app}}
+    workerGroupSpecs:
+      - groupName: worker
+        replicas: {{ .Values.replicas }}
+        minReplicas: {{ .Values.replicas }}
+        maxReplicas: {{ .Values.replicas }}
+        rayStartParams:
+          {{- if $neuron }}
+          # The worker's NeuronCores as a Ray resource: 4 logical cores per
+          # Trainium2 device (LNC 2). The app's actor claims vllm.tensorParallelSize.
+          resources: {{ printf "\"{\\\"neuron_cores\\\": %d}\"" (mul (int .Values.resources.devices) 4) | squote }}
+          {{- else }}
+          num-gpus: {{ .Values.resources.devices | quote }}
+          {{- end }}
+        template:
+          metadata:
+            labels:
+              {{- include "rayserve-serving.labels" . | nindent 14 }}
+          spec:
+            serviceAccountName: {{ .Values.serviceAccounts.serve }}
+            {{- include "rayserve-serving.podSecurityContext" . | nindent 12 }}
+            {{- include "rayserve-serving.scheduling" . | nindent 12 }}
+            {{- include "rayserve-serving.podClaims" . | nindent 12 }}
+            initContainers:
+              {{- include "rayserve-serving.modelDownload" . | nindent 14 }}
+            containers:
+              - name: worker
+                image: {{ .Values.image }}
+                imagePullPolicy: IfNotPresent
+                lifecycle:
+                  preStop:
+                    exec:
+                      command: ["/bin/sh", "-c", "ray stop"]
+                resources:
+                  {{- include "rayserve-serving.resources" . | trim | nindent 18 }}
+                env:
+                  {{- include "rayserve-serving.env" . | nindent 18 }}
+                  {{- include "rayserve-serving.appEnv" . | nindent 18 }}
+                  # The engine flags, as the compile and warmup Jobs pass them to `vllm serve`.
+                  - name: ENGINE_ARGS
+                    value: {{ include "rayserve-serving.engineArgs" . | squote }}
+                  {{- if $neuron }}
+                  - name: NEURON_RT_NUM_CORES
+                    value: {{ .Values.vllm.tensorParallelSize | quote }}
+                  {{- end }}
+                  - name: RAY_gcs_server_request_timeout_seconds
+                    value: "180"
+                  - name: RAY_SERVE_KV_TIMEOUT_S
+                    value: "180"
+                volumeMounts:
+                  {{- include "rayserve-serving.volumeMounts" . | nindent 18 }}
+                  - {name: ray-logs, mountPath: /tmp/ray}
+                  - {name: app, mountPath: /home/ray/python}
+            volumes:
+              {{- include "rayserve-serving.volumes" . | nindent 14 }}
+              - {name: ray-logs, emptyDir: {}}
+              - {name: app, configMap: {name: {{ .Release.Name }}-app}}
+{{- end }}

@@ -1,0 +1,135 @@
+# rayserve-serving: deploy one vLLM model on Ray Serve, or AOT-compile and warm
+# it up for Neuron - the same modes as the vllm-serving chart, with Ray Serve as
+# the server.
+#
+#   helm install <name>-compile rayserve-serving -f <scenario>.values.yaml --set mode=compile
+#   helm install <name>-warmup rayserve-serving -f <scenario>.values.yaml --set mode=warmup
+#   helm install <name> rayserve-serving -f <scenario>.values.yaml                         # serve
+#
+# Takes the same values files as vllm-serving (vllm-serving/values-<config>.yaml)
+# with image set to a Ray image (terraform output serving_images: ray-neuron,
+# ray-gpu). Use the SAME values file and image for every mode: on Neuron the
+# compiled graphs are keyed by image, and the engine flags make them a cache hit.
+
+# ---- Mode ---------------------------------------------------------------------
+# serve:   RayService: a Ray head on the x86 pool and `replicas` workers on the
+#          accelerators, running the vLLM engine in Ray Serve (OpenAI API on 8000)
+# compile: Neuron only. Job that builds the engine with this image - compiling
+#          every graph into the shared Neuron cache (EFS) - then exits. On a CPU
+#          node by default (compile.nodepool), so no accelerator time is spent compiling.
+# warmup:  Neuron only. Job on the serving NodePool and devices: `vllm serve`
+#          until ready (any graph not in the shared cache is compiled and added,
+#          and the traced graphs are saved), then a short `vllm bench serve` load
+#          run with no failed requests.
+mode: serve
+
+# ---- Cluster (from terraform output) ------------------------------------------
+region: ""          # output region
+s3Bucket: ""        # output model_storage_bucket
+image: ""           # a Ray image of terraform output serving_images (ray-neuron, ray-gpu)
+
+# ---- Scenario (Step 1 table) --------------------------------------------------
+model: gpt-oss-20b  # folder in S3 and under /tmp/models (= API model id /tmp/models/<model>)
+hardware: ""        # neuron | gpu
+nodepool: ""        # optional: pin to this Karpenter NodePool. "" = any node of the
+                    # hardware (any trn2 size): the device claim decides what fits
+replicas: 1         # serve mode: Ray workers (one engine replica each), resources.devices each
+resources:          # per pod
+  devices: 1        # Trainium2 devices | NVIDIA GPUs, claimed through DRA
+  cpu: ""
+  memory: ""
+
+vllm:
+  tensorParallelSize: 1
+  maxModelLen: 8192
+  maxNumSeqs: 1
+  maxNumBatchedTokens: 8192
+  # Flags every scenario uses. Prefix caching is off: on Neuron it requires
+  # segmented prefill, which the trn2 files replace with single-shot prefill
+  # buckets (faster in this benchmark), and it's off on GPU too so the flags
+  # stay identical. ShareGPT first turns barely repeat, so it costs no hits.
+  commonArgs:
+    - --no-enable-prefix-caching
+    - --no-disable-hybrid-kv-cache-manager
+  # Hardware-specific flags from the Step 1 table, e.g.
+  #   neuron: --hf-overrides=..., --additional-config=...
+  #   gpu:    --dtype=bfloat16
+  extraArgs: []
+
+env: {}             # extra container env (Step 1 table)
+
+# Devices are claimed through DRA: one ResourceClaimTemplate per release for
+# `resources.devices` devices (DeviceClass neuron.aws.com | gpu.nvidia.com).
+# Neuron: more than one device all come from the smallest connected device
+# group that fits (resource.aws.com/devicegroup{4,8,16}_id), so tensor
+# parallelism runs over neighbouring devices. Logical NeuronCore size is fixed
+# at 2 (the only size vLLM-Neuron supports on trn2).
+neuron:
+  platformTarget: trn2      # NEURON_PLATFORM_TARGET_OVERRIDE in every mode: compile and serve trace the same graphs
+  deviceGroupAttribute: ""  # "" = the smallest of devicegroup{4,8,16}_id that fits resources.devices
+  deviceIds: []             # pin to these deviceIds (single-replica tests), e.g. [0, 1]
+
+port: 8080          # compile/warmup: the Jobs' local `vllm serve` port
+
+# Neuron compile cache shared by every node: an EFS volume (terraform/efs.tf,
+# PVC neuron-cache), read-write in every mode. Compiled graphs (NEFFs) are
+# written straight into it (TORCH_NEURONX_NEFF_CACHE_DIR, plus
+# NEURON_LIBTORCH_REMOTE_CACHE for XLA/NKI graphs), so a graph compiled once - by
+# a compile Job, or by a serving pod on a miss - is a cache hit on every other
+# node. (vLLM-Neuron 0.29 has no switch to make a miss fail instead of compile.)
+# Each image gets its own directory, <mountPath>/<hash of image>/.
+neuronCache:
+  pvc: neuron-cache
+  mountPath: /neuron-cache
+
+# compile mode: build the engine (`vllm serve` until /health, then exit), which
+# compiles every graph into the shared cache. Where it runs is compile.nodepool:
+#   x86-cpu-karpenter (default): CPU compile (VLLM_NEURON_CPU_COMPILE) on a node
+#     sized by cpu/memory below - no accelerator time spent compiling;
+#   "" (or the serving nodepool): on the release's Trainium devices.
+compile:
+  nodepool: x86-cpu-karpenter
+  workers: 31                # parallel neuronx-cc processes per TP worker (NEURON_LIBTORCH_PARALLEL_COMPILE_WORKERS): one per graph of the trn2 configs
+  # CPU compile: the Job's size (Karpenter picks the instance). CPU-bound: at 60
+  # cores and 16 workers it used every core and peaked at 83 GiB.
+  cpu: "120"
+  memory: 200Gi
+  ephemeralStorage: 100Gi    # weights + local cache (x86 nodes: 200 GiB root volume)
+  timeoutSeconds: 10800      # give up after 3 h
+  # Keep each finished Job (and its pod's logs) this long: 4 h.
+  jobTtlSeconds: 14400
+
+# warmup mode: the load run after the engine is ready
+warmup:
+  # Parallel neuronx-cc processes per TP worker when the warmup compiles graphs
+  # missing from the cache (all of them without a CPU compile). Few enough to fit
+  # resources.memory: at 16, a full compile of the trn2 TP4 config ran out of
+  # 112Gi. Slower than the CPU compile (compile.workers), which has its own node.
+  workers: 4
+  # A short load run: fixed-length random prompts at max-num-seqs concurrency.
+  inputLen: 128
+  outputLen: 32
+  numPrompts: 32
+  timeoutSeconds: 7200       # give up after 2 h (compiling misses included)
+  jobTtlSeconds: 14400
+
+# ---- Ray --------------------------------------------------------------------
+ray:
+  version: "2.56.1"          # the Ray in the images (KubeRay operator 1.7.x: Ray 2.55/2.56)
+  head:
+    nodepool: x86-cpu-karpenter
+    cpu: "4"
+    memory: 16Gi
+  # How long the app may be unhealthy before KubeRay restarts the cluster:
+  # starting, or compiling a graph missing from the cache.
+  unhealthySeconds: 3600
+
+# ---- Conventions (match terraform/) ---------------------------------------------
+serviceAccounts:
+  serve: s3-reader     # S3 read-only (EKS Pod Identity): the Ray workers
+  compile: s3-writer   # S3 read/write
+  warmup: s3-reader
+awsCliImage: amazon/aws-cli
+paths:
+  nodeLocal: /mnt/k8s-disks/0   # accelerator nodes' NVMe instance store (RAID0)
+  models: /tmp/models           # where nodeLocal is mounted in pods

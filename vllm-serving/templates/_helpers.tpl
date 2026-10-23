@@ -103,8 +103,10 @@ devices. Then the scenario's env.
 - name: NEURON_LIBTORCH_REMOTE_CACHE
   value: {{ .Values.neuronCache.mountPath }}/{{ include "vllm-serving.cacheKey" . }}/xla
 {{- if has .Values.mode (list "compile" "warmup") }}
+# Parallel neuronx-cc processes in each TP worker: the CPU compile has its own
+# large node; the warmup shares the serving pod's memory with the engine.
 - name: NEURON_LIBTORCH_PARALLEL_COMPILE_WORKERS
-  value: {{ .Values.compile.workers | quote }}
+  value: {{ ternary .Values.compile.workers .Values.warmup.workers (eq .Values.mode "compile") | quote }}
 - name: VLLM_NEURON_MANIFEST_DIR
   value: {{ .Values.neuronCache.mountPath }}/{{ include "vllm-serving.cacheKey" . }}/manifests/{{ .Release.Name }}
 {{- end }}
@@ -164,18 +166,22 @@ tolerations:
 {{- end -}}
 
 {{/* vLLM container resources: cpu/memory + the release's DRA claim (pods on
-the devices), or the CPU compile Job's size. */}}
+the devices), or the CPU compile Job's size. CPU is a request only, never a
+limit: compiling and tracing graphs are CPU-bound, so a pod uses every idle core
+of its node (all of a trn2.48xlarge's when it runs alone). Memory is limited. */}}
 {{- define "vllm-serving.resources" -}}
 {{- if include "vllm-serving.onDevice" . }}
-{{- $r := .Values.resources -}}
-{{- range $kind := list "requests" "limits" }}
-{{ $kind }}:
+{{- $r := .Values.resources }}
+requests:
   {{- with $r.cpu }}
   cpu: {{ . | quote }}
   {{- end }}
   {{- with $r.memory }}
   memory: {{ . }}
   {{- end }}
+{{- with $r.memory }}
+limits:
+  memory: {{ . }}
 {{- end }}
 claims:
   - name: devices

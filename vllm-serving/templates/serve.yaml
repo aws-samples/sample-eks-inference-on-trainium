@@ -28,6 +28,11 @@ metadata:
     {{- include "vllm-serving.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicas }}
+  # A replica can take tens of minutes to become ready (a node launch, the
+  # weights sync, a Neuron graph compiled on a cache miss): past the default
+  # 10 min, the Deployment would report "progress deadline exceeded" while
+  # still starting up.
+  progressDeadlineSeconds: 3600
   # Accelerator nodes have no spare devices for a surge pod.
   strategy:
     type: Recreate

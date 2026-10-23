@@ -102,9 +102,11 @@ neuronCache:
 #   "" (or the serving nodepool): on the release's Trainium devices.
 compile:
   nodepool: x86-cpu-karpenter
-  workers: 16                # parallel neuronx-cc processes (NEURON_LIBTORCH_PARALLEL_COMPILE_WORKERS)
-  cpu: "60"                  # CPU compile: the Job's node size (Karpenter picks the instance)
-  memory: 240Gi
+  workers: 31                # parallel neuronx-cc processes per TP worker (NEURON_LIBTORCH_PARALLEL_COMPILE_WORKERS): one per graph of the trn2 configs
+  # CPU compile: the Job's size (Karpenter picks the instance). CPU-bound: at 60
+  # cores and 16 workers it used every core and peaked at 83 GiB.
+  cpu: "120"
+  memory: 200Gi
   ephemeralStorage: 100Gi    # weights + local cache (x86 nodes: 200 GiB root volume)
   timeoutSeconds: 10800      # give up after 3 h
   # Keep each finished Job (and its pod's logs) this long: 4 h.
@@ -112,6 +114,11 @@ compile:
 
 # warmup mode: the load run after the engine is ready
 warmup:
+  # Parallel neuronx-cc processes per TP worker when the warmup compiles graphs
+  # missing from the cache (all of them without a CPU compile). Few enough to fit
+  # resources.memory: at 16, a full compile of the trn2 TP4 config ran out of
+  # 112Gi. Slower than the CPU compile (compile.workers), which has its own node.
+  workers: 4
   # A short load run: fixed-length random prompts at max-num-seqs concurrency.
   inputLen: 128
   outputLen: 32

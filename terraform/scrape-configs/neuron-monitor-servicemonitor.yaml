@@ -17,3 +17,24 @@ spec:
       scrapeTimeout: 1s
       path: /metrics
       scheme: http
+      # neuron-monitor labels per NeuronCore only: add the Trainium2 device
+      # each core is on (4 logical NeuronCores per device at LNC 2, the
+      # vllm-serving chart's setting; 16 devices on a trn2.48xlarge), so the
+      # dashboards can draw one line per device.
+      metricRelabelings:
+        - {sourceLabels: [neuroncore], regex: "0|1|2|3", targetLabel: neuron_device, replacement: "0"}
+        - {sourceLabels: [neuroncore], regex: "4|5|6|7", targetLabel: neuron_device, replacement: "1"}
+        - {sourceLabels: [neuroncore], regex: "8|9|10|11", targetLabel: neuron_device, replacement: "2"}
+        - {sourceLabels: [neuroncore], regex: "12|13|14|15", targetLabel: neuron_device, replacement: "3"}
+        - {sourceLabels: [neuroncore], regex: "16|17|18|19", targetLabel: neuron_device, replacement: "4"}
+        - {sourceLabels: [neuroncore], regex: "20|21|22|23", targetLabel: neuron_device, replacement: "5"}
+        - {sourceLabels: [neuroncore], regex: "24|25|26|27", targetLabel: neuron_device, replacement: "6"}
+        - {sourceLabels: [neuroncore], regex: "28|29|30|31", targetLabel: neuron_device, replacement: "7"}
+        - {sourceLabels: [neuroncore], regex: "32|33|34|35", targetLabel: neuron_device, replacement: "8"}
+        - {sourceLabels: [neuroncore], regex: "36|37|38|39", targetLabel: neuron_device, replacement: "9"}
+        - {sourceLabels: [neuroncore], regex: "40|41|42|43", targetLabel: neuron_device, replacement: "10"}
+        - {sourceLabels: [neuroncore], regex: "44|45|46|47", targetLabel: neuron_device, replacement: "11"}
+        - {sourceLabels: [neuroncore], regex: "48|49|50|51", targetLabel: neuron_device, replacement: "12"}
+        - {sourceLabels: [neuroncore], regex: "52|53|54|55", targetLabel: neuron_device, replacement: "13"}
+        - {sourceLabels: [neuroncore], regex: "56|57|58|59", targetLabel: neuron_device, replacement: "14"}
+        - {sourceLabels: [neuroncore], regex: "60|61|62|63", targetLabel: neuron_device, replacement: "15"}

@@ -1,0 +1,28 @@
+{{- if eq .Values.mode "serve" }}
+{{ .Release.Name }}: Ray Serve, {{ .Values.replicas }} worker(s) x {{ .Values.resources.devices }} device(s)
+
+  kubectl wait --for=condition=Ready rayservice/{{ .Release.Name }} --timeout=60m
+  kubectl port-forward svc/{{ .Release.Name }}-serve-svc 8000:8000
+  kubectl port-forward svc/{{ .Release.Name }}-head-svc 8265:8265   # Ray dashboard
+
+  In-cluster URL: http://{{ .Release.Name }}-serve-svc.{{ .Release.Namespace }}.svc.cluster.local:8000
+  Model id:       {{ include "rayserve-serving.modelDir" . }}
+{{- if eq .Values.hardware "neuron" }}
+  Compiled graphs: {{ .Values.neuronCache.mountPath }}/{{ include "rayserve-serving.cacheKey" . }}/ (this image's; compile and warm up with the same image first)
+{{- end }}
+{{- else if eq .Values.mode "compile" }}
+{{ .Release.Name }}: compile Job {{ if include "rayserve-serving.onDevice" . }}on the devices{{ else }}on {{ .Values.compile.nodepool }} (CPU compile){{ end }}
+
+  kubectl logs -f -l app.kubernetes.io/instance={{ .Release.Name }} -c compile --tail=-1
+  kubectl wait --for=condition=complete job -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=180m
+
+  Compiled graphs: the neuron-cache EFS volume ({{ .Values.neuronCache.mountPath }}/{{ include "rayserve-serving.cacheKey" . }}/native-neff, /xla; keyed by image),
+  manifest in {{ .Values.neuronCache.mountPath }}/{{ include "rayserve-serving.cacheKey" . }}/manifests/{{ .Release.Name }}/
+{{- else }}
+{{ .Release.Name }}: warmup Job on {{ .Values.resources.devices }} device(s)
+
+  kubectl logs -f -l app.kubernetes.io/instance={{ .Release.Name }} -c warmup --tail=-1
+  kubectl wait --for=condition=complete job -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=120m
+
+  Results (warmup-bench.json) and graph manifest: {{ .Values.neuronCache.mountPath }}/{{ include "rayserve-serving.cacheKey" . }}/manifests/{{ .Release.Name }}/
+{{- end }}

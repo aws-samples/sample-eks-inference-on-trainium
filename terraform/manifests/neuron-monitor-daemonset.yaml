@@ -39,9 +39,12 @@ spec:
             - name: metrics
               containerPort: 9010
               hostPort: 9010
+          # The exporter renders every NeuronCore of every Neuron runtime on the
+          # node each second (MBs per scrape on a trn2.48xlarge under load): at
+          # 500m it was CPU-throttled and missed the 1s scrape timeout.
           resources:
-            limits: { cpu: 500m, memory: 200Mi }
-            requests: { cpu: 100m, memory: 100Mi }
+            limits: { cpu: "2", memory: 512Mi }
+            requests: { cpu: 250m, memory: 256Mi }
           volumeMounts:
             - name: dev
               mountPath: /dev

@@ -1,0 +1,94 @@
+{{- include "rayserve-serving.validate" . }}
+{{- if eq .Values.mode "compile" }}
+{{- $dir := include "rayserve-serving.modelDir" . }}
+{{- $c := .Values.compile }}
+{{- $job := printf "%s-r%d" .Release.Name .Release.Revision | trunc 63 | trimSuffix "-" }}
+# AOT compile (Neuron): build the scenario's vLLM engine - `vllm serve` with the
+# serving engine flags, until /health answers, then stop - which compiles every
+# prefill/decode graph straight into the shared Neuron cache on EFS, where every
+# serving pod with the same values finds it. compile.nodepool picks where: the x86
+# pool (CPU compile, no device) or "" (on the release's devices).
+# Concurrent compiles into the same cache are safe: entries are published
+# atomically, and a graph already there is reused, not recompiled.
+# Named <release>-r<revision>: a Job's spec is immutable, so every
+# `helm upgrade --install` creates a fresh Job and Helm deletes the previous one
+# (as does `helm uninstall`, stopping it if still running). Otherwise a finished
+# Job and its pod (logs) stay for compile.jobTtlSeconds.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $job }}
+  labels:
+    {{- include "rayserve-serving.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ $c.timeoutSeconds }}
+  ttlSecondsAfterFinished: {{ $c.jobTtlSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "rayserve-serving.labels" . | nindent 8 }}
+      annotations:
+        # A long-running Job: Karpenter must not consolidate or replace its node mid-run.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Values.serviceAccounts.compile }}
+      {{- include "rayserve-serving.podSecurityContext" . | nindent 6 }}
+      {{- include "rayserve-serving.scheduling" . | nindent 6 }}
+      {{- include "rayserve-serving.podClaims" . | nindent 6 }}
+      initContainers:
+        {{- include "rayserve-serving.modelDownload" . | nindent 8 }}
+      containers:
+        - name: compile
+          image: {{ .Values.image }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              mkdir -p "$TORCH_NEURONX_NEFF_CACHE_DIR" "$NEURON_LIBTORCH_REMOTE_CACHE" "$VLLM_NEURON_MANIFEST_DIR"
+              # 1. Build the engine; ready = every graph compiled (and in the cache).
+              vllm serve {{ $dir }} --host 127.0.0.1 --port {{ .Values.port }} "$@" &
+              server=$!
+              until python3 -c 'import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=5)' \
+                  http://127.0.0.1:{{ .Values.port }}/health 2>/dev/null; do
+                if ! kill -0 "$server" 2>/dev/null; then
+                  rc=0; wait "$server" || rc=$?
+                  echo "vllm serve exited ($rc) before the engine was ready" >&2; exit 1
+                fi
+                sleep 10
+              done
+              echo "==> Engine ready: all graphs compiled"
+              kill "$server"; wait "$server" 2>/dev/null || true
+              # 2. Native NEFFs are already in the shared cache. XLA/NKI graphs land
+              # in the local cache first: publish any complete one (no-op if there).
+              python3 - <<'PY'
+              import os, re, sys
+              from libtorch_neuronx_lite import envs
+              from libtorch_neuronx_lite.compile.cache import save_cache
+              local, remote = envs.get_neuron_compile_cache_dir(), os.environ["NEURON_LIBTORCH_REMOTE_CACHE"]
+              keys = sorted(d for d in os.listdir(local) if re.fullmatch(r"[0-9a-f]{32}", d)) if os.path.isdir(local) else []
+              for key in keys:
+                  save_cache(local, remote, key)
+              native = os.environ["TORCH_NEURONX_NEFF_CACHE_DIR"]
+              neffs = sum(f.endswith(".neff") for _, _, files in os.walk(native) for f in files)
+              print(f"==> Shared cache: {neffs} native NEFFs in {native}, {len(keys)} XLA/NKI graphs published to {remote}")
+              if not neffs and not keys:
+                  sys.exit("no compiled graphs found")
+              PY
+              echo "==> Manifest: $VLLM_NEURON_MANIFEST_DIR"
+              find "$VLLM_NEURON_MANIFEST_DIR" -name manifest.json
+            - compile
+            {{- range include "rayserve-serving.engineArgs" . | fromJsonArray }}
+            - {{ . | quote }}
+            {{- end }}
+          resources:
+            {{- include "rayserve-serving.resources" . | trim | nindent 12 }}
+          env:
+            {{- include "rayserve-serving.env" . | nindent 12 }}
+          volumeMounts:
+            {{- include "rayserve-serving.volumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "rayserve-serving.volumes" . | nindent 8 }}
+{{- end }}

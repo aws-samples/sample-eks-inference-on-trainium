@@ -6,11 +6,11 @@ module "karpenter" {
   enable_v1_permissions = true
   namespace             = "kube-system"
 
-  iam_role_name                   = "${module.eks.cluster_name}-karpenter-controller"
+  iam_role_name                   = "${local.iam_name}-karpenter-controller"
   iam_role_use_name_prefix        = false
-  iam_policy_name                 = "${module.eks.cluster_name}-karpenter-controller"
+  iam_policy_name                 = "${local.iam_name}-karpenter-controller"
   iam_policy_use_name_prefix      = false
-  node_iam_role_name              = "${module.eks.cluster_name}-karpenter-node"
+  node_iam_role_name              = "${local.iam_name}-karpenter-node"
   node_iam_role_use_name_prefix   = false
   queue_name                      = "${module.eks.cluster_name}-karpenter"
   rule_name_prefix                = "eks-workshop"
@@ -130,6 +130,7 @@ resource "helm_release" "karpenter" {
 locals {
   karpenter_template_vars = {
     name                            = local.name
+    node_role                       = module.karpenter.node_iam_role_name
     x86_ami_name                    = var.x86_ami_name
     neuron_ami_name                 = var.neuron_ami_name
     gpu_ami_name                    = var.gpu_ami_name

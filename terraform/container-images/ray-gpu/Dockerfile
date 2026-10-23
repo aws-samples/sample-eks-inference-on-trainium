@@ -7,6 +7,9 @@ USER root
 # vllm-openai installs with uv into the system Python (it may have no pip).
 # Needs a version the KubeRay operator supports (1.7.x: Ray 2.55/2.56).
 RUN uv pip install --system "ray[serve]==2.56.1"
+# KubeRay's default readiness probes call wget, which vllm-openai doesn't ship.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends wget \
+ && rm -rf /var/lib/apt/lists/*
 # KubeRay runs Ray as the `ray` user; the Serve app is mounted into /home/ray/python.
 RUN useradd -m -s /bin/bash ray && mkdir -p /home/ray/python && chown -R ray:ray /home/ray
 USER ray

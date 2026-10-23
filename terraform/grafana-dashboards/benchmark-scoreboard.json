@@ -154,7 +154,7 @@
     {
       "type": "stat",
       "title": "ITL p50",
-      "description": "Inter-token latency, median over the last minute (server-side; the client-side equivalent is TPOT in visualize.py).",
+      "description": "Inter-token latency, median over the last minute (server-side; the client-side equivalent is TPOT in the bench Job summary).",
       "id": 3,
       "datasource": {
         "type": "prometheus",
@@ -300,7 +300,7 @@
     {
       "type": "stat",
       "title": "Running requests",
-      "description": "Requests being decoded now (cap = replicas x max_num_seqs: 128 on a 48xl node, 16 on a single-accelerator node). Anything above waits.",
+      "description": "Requests being decoded now (cap = replicas x max_num_seqs). Anything above waits.",
       "id": 5,
       "datasource": {
         "type": "prometheus",
@@ -397,7 +397,7 @@
     {
       "type": "stat",
       "title": "ITL p50",
-      "description": "Inter-token latency, median over the last minute (server-side; the client-side equivalent is TPOT in visualize.py).",
+      "description": "Inter-token latency, median over the last minute (server-side; the client-side equivalent is TPOT in the bench Job summary).",
       "id": 13,
       "datasource": {
         "type": "prometheus",
@@ -543,7 +543,7 @@
     {
       "type": "stat",
       "title": "Running requests",
-      "description": "Requests being decoded now (cap = replicas x max_num_seqs: 128 on a 48xl node, 16 on a single-accelerator node). Anything above waits.",
+      "description": "Requests being decoded now (cap = replicas x max_num_seqs). Anything above waits.",
       "id": 15,
       "datasource": {
         "type": "prometheus",
@@ -690,7 +690,7 @@
     {
       "type": "stat",
       "title": "$ / 1M out tokens - at peak",
-      "description": "Cost at peak sustained throughput: the live preview of the visualize.py verdict.",
+      "description": "Cost at peak sustained throughput: the live preview of the bench Job summary's $ per 1M output tokens.",
       "id": 8,
       "datasource": {
         "type": "prometheus",
@@ -837,7 +837,7 @@
     {
       "type": "stat",
       "title": "$ / 1M out tokens - at peak",
-      "description": "Cost at peak sustained throughput: the live preview of the visualize.py verdict.",
+      "description": "Cost at peak sustained throughput: the live preview of the bench Job summary's $ per 1M output tokens.",
       "id": 18,
       "datasource": {
         "type": "prometheus",
@@ -1308,7 +1308,7 @@
     {
       "type": "timeseries",
       "title": "Accelerator utilization",
-      "description": "NeuronCore utilization averaged over the node's cores. neuron-monitor reports one series per Neuron runtime (one per TP worker), so series are summed per core before averaging.",
+      "description": "Utilization of each Trainium2 device that was busy at some point in the selected time range (neuron-monitor: NeuronCores summed across Neuron runtimes, one series per TP worker, averaged per device).",
       "id": 10,
       "datasource": {
         "type": "prometheus",
@@ -1347,8 +1347,8 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "avg(sum by (instance_id, neuroncore) (neuroncore_utilization_ratio))",
-          "legendFormat": "utilization",
+          "expr": "clamp_max(avg by (instance_id, neuron_device) (sum by (instance_id, neuron_device, neuroncore) (neuroncore_utilization_ratio)), 1) and on (instance_id, neuron_device) max_over_time((avg by (instance_id, neuron_device) (sum by (instance_id, neuron_device, neuroncore) (neuroncore_utilization_ratio)))[$__range:15s]) > 0.01",
+          "legendFormat": "device {{neuron_device}}",
           "refId": "A"
         }
       ]
@@ -1413,7 +1413,7 @@
     {
       "type": "timeseries",
       "title": "Accelerator utilization",
-      "description": "Average GPU utilization across the GPU nodes (DCGM).",
+      "description": "Utilization of each GPU on the GPU nodes (DCGM).",
       "id": 20,
       "datasource": {
         "type": "prometheus",
@@ -1452,8 +1452,8 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "avg(DCGM_FI_DEV_GPU_UTIL) / 100",
-          "legendFormat": "utilization",
+          "expr": "DCGM_FI_DEV_GPU_UTIL / 100",
+          "legendFormat": "{{hostname}} GPU {{gpu}}",
           "refId": "A"
         }
       ]

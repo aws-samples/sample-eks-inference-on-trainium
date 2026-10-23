@@ -71,6 +71,9 @@ data "aws_ecrpublic_authorization_token" "token" {
 locals {
   name   = var.name
   region = var.region
+  # IAM names are global to the account: include the region so clusters with
+  # the same name can run in several regions at once.
+  iam_name = "${local.name}-${local.region}"
 
   # Bucket for model weights, the Neuron compile cache and benchmark results:
   # var.existing_cache_bucket if set, else a globally-unique bucket created here.

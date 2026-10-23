@@ -1,0 +1,13 @@
+{{- include "rayserve-serving.validate" . }}
+{{- if eq .Values.mode "serve" }}
+# The Ray Serve app (files/vllm_ray_app.py), mounted into the head and workers.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-app
+  labels:
+    {{- include "rayserve-serving.labels" . | nindent 4 }}
+data:
+  vllm_ray_app.py: |
+    {{- .Files.Get "files/vllm_ray_app.py" | nindent 4 }}
+{{- end }}

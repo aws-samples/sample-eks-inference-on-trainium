@@ -1,12 +1,14 @@
 # RayService for gpt-oss-20b, TP4 on 1 Trainium2 device (4 logical NeuronCores),
 # on any trn2 size: Ray head on the x86 pool, one worker on a Trainium node. The worker claims its device through the Neuron DRA driver (the
-# ResourceClaimTemplate below), pulls the weights from S3, and reads the
-# compiled graphs from the shared Neuron cache (EFS) - compile them first with
-# the vllm-serving chart's compile mode and values-gpt-oss-trn2-tp4.yaml: ENGINE_ARGS
-# below are that file's engine flags, so the graphs are cache hits.
+# ResourceClaimTemplate below) and pulls the weights from S3. ENGINE_ARGS below
+# are values-gpt-oss-trn2-tp4.yaml's engine flags. Its compiled graphs live in
+# the shared Neuron cache (EFS), in this image's own folder (NEURON_CACHE_KEY,
+# the vllm-serving chart's cache key scheme applied to $RAY_NEURON_IMAGE): the
+# first start compiles them all on Trainium, and later starts reuse them.
 #
 #   kubectl create configmap vllm-ray-app --from-file=ray/vllm_ray_app.py --dry-run=client -o yaml | kubectl apply -f -
-#   envsubst '$RAY_NEURON_IMAGE $S3_BUCKET_NAME $AWS_REGION' < ray/ray-service-gpt-oss-trn2-tp4.yaml | kubectl apply -f -
+#   export NEURON_CACHE_KEY=$(printf %s "$RAY_NEURON_IMAGE" | shasum | cut -c1-10)
+#   envsubst '$RAY_NEURON_IMAGE $S3_BUCKET_NAME $AWS_REGION $NEURON_CACHE_KEY' < ray/ray-service-gpt-oss-trn2-tp4.yaml | kubectl apply -f -
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
 metadata:
@@ -28,8 +30,10 @@ metadata:
   name: gpt-oss-trn2-tp4-ray
   namespace: default
 spec:
-  serviceUnhealthySecondThreshold: 1800
-  deploymentUnhealthySecondThreshold: 1800
+  # The first start compiles every graph on Trainium before the app is healthy:
+  # allow it up to 3 h before KubeRay restarts the cluster.
+  serviceUnhealthySecondThreshold: 10800
+  deploymentUnhealthySecondThreshold: 10800
   serveConfigV2: |
     applications:
       - name: gpt-oss-20b
@@ -155,12 +159,7 @@ spec:
                 # fresh node -> full pull, partial -> just the gap. Weights only.
                 aws configure set s3.preferred_transfer_client crt
                 aws s3 sync "s3://${S3_BUCKET_NAME}/gpt-oss-20b/" /tmp/models/gpt-oss-20b/ --exclude ".ready/*" --exclude "cache*" --exclude "original/*" --exclude "metal/*"
-                # This init container runs as root, but the Ray worker runs as the
-                # non-root `ray` user, and the plugin copies graphs from the shared
-                # cache and writes lock files into VLLM_CACHE_ROOT (inside the model
-                # dir) - make it writable by the ray user.
                 mkdir -p /tmp/models/gpt-oss-20b/cache
-                chmod -R a+rwX /tmp/models/gpt-oss-20b
                 ls -la /tmp/models/gpt-oss-20b/
             env:
               - name: AWS_REGION
@@ -172,6 +171,11 @@ spec:
           - name: worker
             image: $RAY_NEURON_IMAGE
             imagePullPolicy: IfNotPresent
+            # Root, like the vllm-serving chart's pods: the Neuron cache writes the
+            # NEFFs on EFS readable by their owner only (0600), as root.
+            securityContext:
+              runAsUser: 0
+              runAsGroup: 0
             lifecycle:
               preStop:
                 exec:
@@ -188,6 +192,13 @@ spec:
               name: dshm
             - name: neuron-cache
               mountPath: /neuron-cache
+            # The traced graphs (the plugin's precompile cache) the warmup Job
+            # saved, where the plugin reads them (<VLLM_CACHE_ROOT>/neuron/torch_compile),
+            # as the vllm-serving chart mounts them: without them the worker
+            # re-traces and recompiles every graph.
+            - name: neuron-cache
+              mountPath: /tmp/models/gpt-oss-20b/cache/neuron/torch_compile
+              subPath: ${NEURON_CACHE_KEY}/torch-compile
             resources:
               # One Trainium2 device (4 logical NeuronCores), from the DRA claim;
               # cpu/memory are one device's share (a trn2.3xlarge: 12 vCPU / 128 GiB).
@@ -205,9 +216,10 @@ spec:
             - name: MODEL_ID
               value: "/tmp/models/gpt-oss-20b"
             - name: ENGINE_ARGS
-              value: '["--tokenizer", "/tmp/models/gpt-oss-20b", "--tensor-parallel-size=4", "--max-model-len=8192", "--max-num-seqs=8", "--max-num-batched-tokens=512", "--no-enable-prefix-caching", "--no-disable-hybrid-kv-cache-manager", "--hf-overrides={\"quantization_config\": {}}", "--additional-config={\"neuron_config\": {\"decode_context_length_buckets\": [512, 1024]}}"]'
+              value: '["--tokenizer", "/tmp/models/gpt-oss-20b", "--tensor-parallel-size=4", "--max-model-len=8192", "--max-num-seqs=32", "--max-num-batched-tokens=512", "--no-enable-prefix-caching", "--no-disable-hybrid-kv-cache-manager", "--hf-overrides={\"quantization_config\": {}}", "--additional-config={\"neuron_config\": {\"decode_context_length_buckets\": [512, 1024, 2048, 4096]}}"]'
             # Shared Neuron cache on EFS, as the vllm-serving chart sets it: LNC 2,
-            # the trn2 target, native NEFFs and XLA/NKI graphs.
+            # the trn2 target, native NEFFs and XLA/NKI graphs, under the chart's
+            # cache key for this image (NEURON_CACHE_KEY).
             - name: NEURON_LOGICAL_NC_CONFIG
               value: "2"
             - name: NEURON_PLATFORM_TARGET_OVERRIDE
@@ -215,9 +227,9 @@ spec:
             - name: VLLM_NEURON_BACKEND
               value: neuron_native
             - name: TORCH_NEURONX_NEFF_CACHE_DIR
-              value: /neuron-cache/native-neff
+              value: /neuron-cache/${NEURON_CACHE_KEY}/native-neff
             - name: NEURON_LIBTORCH_REMOTE_CACHE
-              value: /neuron-cache/xla
+              value: /neuron-cache/${NEURON_CACHE_KEY}/xla
             - name: NEURON_CORES
               value: "4" # NeuronCores each replica claims (TP4)
             - name: NEURON_RT_ASYNC_EXEC
@@ -231,9 +243,13 @@ spec:
             # Same timeouts as values-gpt-oss-trn2-tp4.yaml.
             - name: VLLM_NEURON_COMPILATION_TIMEOUT
               value: "1200"
+            # Parallel neuronx-cc processes when compiling at startup: few enough
+            # to fit the worker's 112Gi (the chart's CPU compile uses 16 on 240Gi).
+            - name: NEURON_LIBTORCH_PARALLEL_COMPILE_WORKERS
+              value: "4"
             - name: VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
               value: "1200"
-            # Node-local compile cache inside the model dir (graphs copied from EFS).
+            # vLLM cache inside the model dir, on the node NVMe (its neuron/torch_compile is the EFS precompile cache, mounted above).
             - name: VLLM_CACHE_ROOT
               value: "/tmp/models/gpt-oss-20b/cache"
             # system path

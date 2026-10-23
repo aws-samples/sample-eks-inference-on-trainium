@@ -85,7 +85,7 @@ resource "aws_codebuild_project" "images" {
 }
 
 resource "aws_iam_role" "codebuild" {
-  name = "${local.name}-serving-images-codebuild"
+  name = "${local.iam_name}-serving-images-codebuild"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -179,7 +179,9 @@ resource "null_resource" "build_image" {
     }
   }
 
-  depends_on = [aws_iam_role_policy.codebuild]
+  # The source zip goes to the model-storage bucket (s3_bucket_name is a plain
+  # string, so Terraform doesn't see that dependency on its own).
+  depends_on = [aws_iam_role_policy.codebuild, aws_s3_bucket.model_storage]
 }
 
 ################################################################################
