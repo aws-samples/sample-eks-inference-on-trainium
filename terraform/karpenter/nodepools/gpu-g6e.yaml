@@ -3,10 +3,19 @@ kind: NodePool
 metadata:
   name: gpu-g6e
 spec:
+<<<<<<< HEAD
   # Dynamic, on-demand (or Spot) GPU capacity: the g6e family, NVIDIA L40S 48 GB
   # GPUs. Karpenter launches the cheapest size that fits a pod's GPUs, CPU and
   # memory, falling back to a larger one when it's out of capacity, and
   # consolidates the node away when it's empty.
+=======
+  # Dynamic, on-demand (or Spot) GPU capacity: any g6e size (NVIDIA L40S 48 GB,
+  # 1 GPU up to g6e.16xlarge, 4-8 on 12x/24x/48xlarge; every size has NVMe
+  # instance store for the model cache). Karpenter picks the cheapest size that
+  # fits the pod and falls back to the next on insufficient capacity; the limits
+  # below rule out sizes larger than they allow. It launches a node when a pod
+  # needs one and consolidates it away when it's empty.
+>>>>>>> 2823e89ed9b2b96a11d1ec8f947c714538172f8b
   template:
     metadata:
       labels:

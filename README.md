@@ -573,7 +573,7 @@ QUERY_ID=$(aws logs start-query --log-group-name /aws/eks/demo-neuron-eks/contai
 sleep 10; aws logs get-query-results --query-id $QUERY_ID
 ```
 
-### 3. Visualization
+### 3. Dashboards
 
 Grafana loads every dashboard JSON under [`grafana-dashboards/`](terraform/grafana-dashboards/)
 into the **Inference** folder:
