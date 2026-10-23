@@ -12,5 +12,5 @@ resources: { devices: 1, cpu: "6", memory: 48Gi }
 vllm:
   tensorParallelSize: 1
   maxModelLen: 8192
-  maxNumSeqs: 64   # same batch cap as the trn2 perf config
+  maxNumSeqs: 32
   maxNumBatchedTokens: 8192

@@ -11,7 +11,7 @@ resources: { devices: 1, cpu: "10", memory: 112Gi }
 vllm:
   tensorParallelSize: 4
   maxModelLen: 8192
-  maxNumSeqs: 64
+  maxNumSeqs: 32
   maxNumBatchedTokens: 512
   extraArgs:
     - --block-size=128
