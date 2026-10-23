@@ -35,7 +35,8 @@ def query(region: str, states: list[str] | None) -> dict:
         filters.append(f"Name=state,Values={','.join(states)}")
     cmd = ["aws", "ec2", "describe-capacity-reservations", "--region", region, "--filters", *filters, "--output", "json"]
     q = {"region": region, "cmd": " ".join(cmd), "rows": [], "detail": ""}
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    # argv list, no shell: the arguments can't inject a command.
+    res = subprocess.run(cmd, capture_output=True, text=True)  # nosemgrep
     if res.returncode != 0:
         q["detail"] = (res.stderr.strip().splitlines() or ["unknown error"])[-1].removeprefix("aws: [ERROR]: ")
         q["status"] = "unsupported" if "InvalidAction" in q["detail"] else "error"

@@ -58,7 +58,8 @@ def query(region: str, instance_type: str, args) -> dict:
     if args.end:
         cmd += ["--end-date-range", f"{args.end}T00:00:00Z"]
     q = {"region": region, "type": instance_type, "cmd": " ".join(cmd), "rows": [], "detail": ""}
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    # argv list, no shell: the arguments can't inject a command.
+    res = subprocess.run(cmd, capture_output=True, text=True)  # nosemgrep
     if res.returncode != 0:
         q["detail"] = (res.stderr.strip().splitlines() or ["unknown error"])[-1].removeprefix("aws: [ERROR]: ")
         q["status"] = "unsupported" if ("InvalidParameterValue" in q["detail"] or "InvalidAction" in q["detail"]) else "error"

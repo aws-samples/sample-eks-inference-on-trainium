@@ -11,9 +11,32 @@
 #     <mount>/manifests/<release>/   per-compile manifest of the graphs it built
 ################################################################################
 
+# Customer managed key for the cache at rest.
+resource "aws_kms_key" "efs" {
+  description             = "${local.name} Neuron compile cache (EFS)"
+  enable_key_rotation     = true
+  deletion_window_in_days = 7
+
+  # The default key policy, made explicit: the account's IAM policies control
+  # use of the key (EFS uses it on behalf of the caller).
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "EnableIAMPolicies"
+      Effect    = "Allow"
+      Principal = { AWS = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root" }
+      Action    = "kms:*"
+      Resource  = "*"
+    }]
+  })
+
+  tags = local.tags
+}
+
 resource "aws_efs_file_system" "neuron_cache" {
   creation_token   = "${local.name}-neuron-cache"
   encrypted        = true
+  kms_key_id       = aws_kms_key.efs.arn
   performance_mode = "generalPurpose"
   # Throughput scales with use and is billed per GB transferred: bursts of
   # NEFF reads at serving startup, idle otherwise.
@@ -51,10 +74,16 @@ resource "aws_efs_mount_target" "neuron_cache" {
   security_groups = [aws_security_group.efs.id]
 }
 
-# Root of the cache, created world-readable and root-writable: compile Jobs
-# (root) write, serving pods (root, or `ray` in the Ray images) read.
+# Root of the cache. The access point enforces one identity, root (uid/gid 0),
+# for every client whatever its own user (root, or `ray` in the Ray images), so
+# all of them share the same files.
 resource "aws_efs_access_point" "neuron_cache" {
   file_system_id = aws_efs_file_system.neuron_cache.id
+
+  posix_user {
+    uid = 0
+    gid = 0
+  }
 
   root_directory {
     path = "/neuron-cache"

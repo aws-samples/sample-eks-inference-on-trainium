@@ -34,13 +34,18 @@ resource "aws_iam_role_policy" "karpenter_extras" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Describe actions have no resource-level permissions.
         Effect = "Allow"
         Action = [
-          "iam:ListInstanceProfiles",
           "ec2:DescribeCapacityReservations",
           "ec2:DescribeInstanceStatus",
         ]
         Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["iam:ListInstanceProfiles"]
+        Resource = ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:instance-profile/*"]
       },
       {
         # RunInstances into an ML Capacity Block: the submodule's RunInstances
