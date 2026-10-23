@@ -274,6 +274,7 @@ Export the Terraform outputs the next steps use:
 export AWS_REGION="$(terraform -chdir=terraform output -raw region)"
 export S3_BUCKET_NAME="$(terraform -chdir=terraform output -raw model_storage_bucket)"
 export VLLM_NEURON_IMAGE="$(terraform -chdir=terraform output -json serving_images | jq -r '."vllm-neuron"')"
+export VLLM_NEURON_IMAGE_PERF="$(terraform -chdir=terraform output -json serving_images | jq -r '."vllm-neuron-perf"')"
 export VLLM_GPU_IMAGE="$(terraform -chdir=terraform output -json serving_images | jq -r '."vllm-gpu"')"
 ```
 

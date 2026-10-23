@@ -1,0 +1,24 @@
+# gpt-oss-20b on one Trainium2 device (TP4, LNC 2) with the vllm-neuron-perf
+# image (Jim Burtoft's branches), at its best measured config: FP8 experts with
+# a BF16 copy for prefill, batch 64, block 128. Needs that image: block 128 makes
+# the stock image's decode 2-5x slower, and stock has no FP8 expert path.
+# Compile with warmup (on Trainium, ~20 min): the CPU compile of FP8 fails on
+# this image (expert scales are registered only when the real weights load).
+hardware: neuron
+model: gpt-oss-20b
+replicas: 1
+resources: { devices: 1, cpu: "10", memory: 112Gi }
+vllm:
+  tensorParallelSize: 4
+  maxModelLen: 8192
+  maxNumSeqs: 64
+  maxNumBatchedTokens: 512
+  extraArgs:
+    - --block-size=128
+    # One decode bucket, as measured: fits the 512 in / 256 out benchmark and
+    # keeps the compile short. Longer contexts fall back to the 8192 bucket.
+    - '--additional-config={"neuron_config": {"quantization": "fp8", "decode_context_length_buckets": [1024]}}'
+env:
+  VLLM_NEURON_COMPILATION_TIMEOUT: "1200"
+  VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1200"
+  NEURON_SKIP_EFA_AFFINITY: "1"
