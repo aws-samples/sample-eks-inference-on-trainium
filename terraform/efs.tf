@@ -141,6 +141,12 @@ resource "kubectl_manifest" "neuron_cache_pv" {
     }
   })
   depends_on = [module.eks, aws_efs_mount_target.neuron_cache]
+
+  # A PV's volumeHandle is immutable: a new file system or access point means a
+  # new PV (and PVC, below) rather than an in-place update, which the API rejects.
+  lifecycle {
+    replace_triggered_by = [aws_efs_access_point.neuron_cache]
+  }
 }
 
 resource "kubectl_manifest" "neuron_cache_pvc" {
@@ -157,4 +163,8 @@ resource "kubectl_manifest" "neuron_cache_pvc" {
     }
   })
   depends_on = [kubectl_manifest.neuron_cache_pv]
+
+  lifecycle {
+    replace_triggered_by = [kubectl_manifest.neuron_cache_pv]
+  }
 }

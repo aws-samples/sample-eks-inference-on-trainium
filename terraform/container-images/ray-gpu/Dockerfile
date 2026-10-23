@@ -4,9 +4,10 @@
 FROM public.ecr.aws/deep-learning-containers/vllm:0.29.0-gpu-py312-cu130-ubuntu24.04-ec2-v1.3
 LABEL hardware=gpu
 USER root
-# The vLLM DLC installs with uv into the system Python (it may have no pip).
-# Needs a version the KubeRay operator supports (1.7.x: Ray 2.55/2.56).
-RUN uv pip install --system "ray[serve]==2.56.1"
+# The vLLM DLC installs vLLM with uv into the system Python (it may have no
+# pip), which its apt upgrade marks externally managed: install next to vLLM
+# anyway. Needs a version the KubeRay operator supports (1.7.x: Ray 2.55/2.56).
+RUN uv pip install --system --break-system-packages "ray[serve]==2.56.1"
 # KubeRay's default readiness probes call wget, which the vLLM DLC doesn't ship.
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends wget \
  && rm -rf /var/lib/apt/lists/*
