@@ -151,6 +151,15 @@ resource "aws_iam_role_policy" "codebuild" {
   })
 }
 
+# IAM is eventually consistent: a build started seconds after the policy is
+# written fails in QUEUED (no logs:CreateLogStream yet). Re-waits on a change.
+resource "time_sleep" "codebuild_iam" {
+  create_duration = "30s"
+  triggers = {
+    policy = aws_iam_role_policy.codebuild.policy
+  }
+}
+
 # Build an image whenever its folder (or the buildspec) changes: zip the folder
 # to S3, start the build and wait for it, so a failed build
 # fails the apply. Images build in parallel. Logs: CodeBuild console, project
@@ -200,7 +209,7 @@ resource "null_resource" "build_image" {
 
   # The source zip goes to the model-storage bucket (s3_bucket_name is a plain
   # string, so Terraform doesn't see that dependency on its own).
-  depends_on = [aws_iam_role_policy.codebuild, aws_s3_bucket.model_storage]
+  depends_on = [time_sleep.codebuild_iam, aws_s3_bucket.model_storage]
 }
 
 ################################################################################
