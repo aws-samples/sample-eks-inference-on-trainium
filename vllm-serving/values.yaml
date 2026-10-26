@@ -40,6 +40,10 @@ resources:          # per pod
   devices: 1        # Trainium2 devices | NVIDIA GPUs, claimed through DRA
   cpu: ""
   memory: ""
+# $/hr of one device (trn2: node price / devices, ~2.24). x resources.devices is
+# a pod's $/hr, put on its pods as label usd-per-hour: the bench summary and the
+# Grafana dashboards' $ per 1M output tokens. "" = no cost figures.
+deviceHourlyUsd: ""
 
 vllm:
   tensorParallelSize: 1
@@ -143,7 +147,6 @@ bench:
   slo: {ttft: 1000, tpot: 50}
   sloPercent: 95
   numRuns: 1
-  deviceHourlyUsd: ""        # $/hr of one device (trn2: node price / devices, ~2.24) for $/1M output tokens
   serverReadyTimeoutSeconds: 3600
   jobTtlSeconds: 14400
 

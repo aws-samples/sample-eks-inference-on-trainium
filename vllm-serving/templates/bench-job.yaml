@@ -18,8 +18,7 @@
 {{- $benchCmd = append $benchCmd "--goodput" }}
 {{- range $k, $v := . }}{{ $benchCmd = append $benchCmd (printf "%s:%v" $k $v) }}{{ end }}
 {{- end }}
-{{- $hourly := "" }}
-{{- if ne (toString $b.deviceHourlyUsd) "" }}{{ $hourly = mulf (float64 $b.deviceHourlyUsd) (float64 .Values.resources.devices) | toString }}{{ end }}
+{{- $hourly := include "vllm-serving.podHourlyUsd" . }}
 # Profile this release's serving config with `vllm bench sweep serve_workload`:
 # it starts the same `vllm serve` the serve mode runs (same engine flags, same
 # Neuron cache) inside this Job's container, then for each bench.workloads entry
@@ -166,6 +165,7 @@ spec:
     metadata:
       labels:
         {{- include "vllm-serving.labels" . | nindent 8 }}
+        {{- with include "vllm-serving.costLabel" . }}{{ . | nindent 8 }}{{ end }}
       annotations:
         # A long-running Job: Karpenter must not consolidate or replace its node mid-run.
         karpenter.sh/do-not-disrupt: "true"

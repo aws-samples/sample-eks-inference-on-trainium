@@ -9,6 +9,7 @@ replicas: 1
 # Needs more than a g6e.xlarge (4 vCPU / 32 GiB) offers, so Karpenter picks a g6e.2xlarge
 # (or a larger g6e when 2xlarge is out of capacity).
 resources: { devices: 1, cpu: "6", memory: 48Gi }
+deviceHourlyUsd: "3.00"   # $/hr per device
 vllm:
   tensorParallelSize: 1
   maxModelLen: 8192

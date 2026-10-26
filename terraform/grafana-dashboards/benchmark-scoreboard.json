@@ -35,13 +35,20 @@
       },
       {
         "name": "trn2_usd_hr",
-        "label": "Trainium $/hr",
-        "type": "textbox",
-        "query": "40",
-        "current": {
-          "text": "40",
-          "value": "40"
-        }
+        "label": "Trainium $/hr (pod)",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus-1s"
+        },
+        "query": {
+          "query": "label_values(vllm:num_requests_running{service=\"$trn2\"}, usd_per_hour)",
+          "refId": "trn2_usd_hr"
+        },
+        "definition": "label_values(vllm:num_requests_running{service=\"$trn2\"}, usd_per_hour)",
+        "refresh": 2,
+        "current": {},
+        "description": "The Trainium endpoint's pod $/hr: deviceHourlyUsd x resources.devices from its vllm-serving values file (pod label usd-per-hour). Empty if the values file sets no deviceHourlyUsd."
       },
       {
         "name": "gpu",
@@ -62,13 +69,20 @@
       },
       {
         "name": "gpu_usd_hr",
-        "label": "GPU $/hr",
-        "type": "textbox",
-        "query": "60",
-        "current": {
-          "text": "60",
-          "value": "60"
-        }
+        "label": "GPU $/hr (pod)",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus-1s"
+        },
+        "query": {
+          "query": "label_values(vllm:num_requests_running{service=\"$gpu\"}, usd_per_hour)",
+          "refId": "gpu_usd_hr"
+        },
+        "definition": "label_values(vllm:num_requests_running{service=\"$gpu\"}, usd_per_hour)",
+        "refresh": 2,
+        "current": {},
+        "description": "The GPU endpoint's pod $/hr: deviceHourlyUsd x resources.devices from its vllm-serving values file (pod label usd-per-hour). Empty if the values file sets no deviceHourlyUsd."
       }
     ]
   },
@@ -85,7 +99,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "## AWS Trainium2\n`$trn2` · node **$${trn2_usd_hr}/hr**"
+        "content": "## AWS Trainium2\n`$trn2` · **$${trn2_usd_hr}/hr** per pod"
       }
     },
     {
@@ -100,7 +114,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "## NVIDIA H100\n`$gpu` · node **$${gpu_usd_hr}/hr**"
+        "content": "## NVIDIA H100\n`$gpu` · **$${gpu_usd_hr}/hr** per pod"
       }
     },
     {
@@ -690,7 +704,7 @@
     {
       "type": "stat",
       "title": "$ / 1M out tokens - at peak",
-      "description": "Cost at peak sustained throughput: the live preview of the bench Job summary's $ per 1M output tokens.",
+      "description": "Cost at peak sustained throughput, the live preview of the bench Job summary's $ per 1M output tokens: pod $/hr x the pods behind the Service (replicas), divided by the peak sustained output tokens per hour in the selected time range. No data if the endpoint's values file sets no deviceHourlyUsd.",
       "id": 8,
       "datasource": {
         "type": "prometheus",
@@ -730,7 +744,7 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "$trn2_usd_hr * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[10s])))[$__range:2s]))",
+          "expr": "(vector(0$trn2_usd_hr) > 0) * max_over_time(count(count by (pod) (vllm:num_requests_running{service=\"$trn2\"}))[$__range:15s]) * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[10s])))[$__range:2s]))",
           "refId": "A",
           "instant": false
         }
@@ -837,7 +851,7 @@
     {
       "type": "stat",
       "title": "$ / 1M out tokens - at peak",
-      "description": "Cost at peak sustained throughput: the live preview of the bench Job summary's $ per 1M output tokens.",
+      "description": "Cost at peak sustained throughput, the live preview of the bench Job summary's $ per 1M output tokens: pod $/hr x the pods behind the Service (replicas), divided by the peak sustained output tokens per hour in the selected time range. No data if the endpoint's values file sets no deviceHourlyUsd.",
       "id": 18,
       "datasource": {
         "type": "prometheus",
@@ -877,7 +891,7 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "$gpu_usd_hr * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$gpu\"}[10s])))[$__range:2s]))",
+          "expr": "(vector(0$gpu_usd_hr) > 0) * max_over_time(count(count by (pod) (vllm:num_requests_running{service=\"$gpu\"}))[$__range:15s]) * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$gpu\"}[10s])))[$__range:2s]))",
           "refId": "A",
           "instant": false
         }

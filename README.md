@@ -459,7 +459,7 @@ shared cache is keyed by image, so a different build never loads another
 image's graphs. On a `trn2.3xlarge`, free the device first:
 
 ```bash
-helm uninstall $CFG   # trn2.3xlarge only: frees its one device
+helm uninstall $CFG
 export RAY_NEURON_IMAGE="$(terraform -chdir=terraform output -json serving_images | jq -r '."ray-neuron"')"
 ```
 
@@ -596,7 +596,7 @@ into the **Inference** folder:
 | **vLLM** | What each endpoint delivers: TTFT, inter-token and end-to-end latency (p50/p95), output and prompt tokens/s, requests/s. Why it moves: running vs waiting requests, queue time, KV-cache usage, prefix-cache hits, preemptions. Pick endpoints with the **Endpoint** selector. |
 | **Neuron (neuron-monitor)** | NeuronCore utilization, device memory, execution latency and errors per trn2 node |
 | **GPU (DCGM)** | GPU utilization, memory, power and temperature per GPU node |
-| **Benchmark** | One endpoint under load (Section 4): TTFT and inter-token latency, tokens/s, running vs waiting requests, prefill vs decode time, KV-cache and accelerator utilization, $ per 1M tokens at peak. Pick the endpoint and set its node $/hr at the top. |
+| **Benchmark** | One endpoint under load (Section 4): TTFT and inter-token latency, tokens/s, running vs waiting requests, prefill vs decode time, KV-cache and accelerator utilization, $ per 1M tokens at peak. Pick the endpoint at the top; its $/hr comes from the values file's `deviceHourlyUsd` x `resources.devices`. |
 | **Ray Cluster / Ray Serve / Ray Serve Deployment (optional Ray deployment)** | Ray cluster, Serve applications and replicas. Empty unless the optional Ray step is running. |
 
 ```bash
@@ -671,16 +671,15 @@ The test is set in the values file's `bench` block (defaults in
 | `bench.numPrompts` | 3x `maxNumSeqs` (min 32) | Requests per level. The default saturates the batch pass, so requests queue, and spreads the levels up to about `maxNumSeqs`. The serial pass runs them one at a time too, so this sets most of the Job's duration: raise it for more levels past saturation. |
 | `bench.workloadIters` | 8 | Load levels, including the serial and batch passes |
 | `bench.slo`, `bench.sloPercent` | TTFT 1000 ms, TPOT 50 ms; 95% | The latency SLA, and the share of requests that must meet it |
-| `bench.deviceHourlyUsd` | – | $/hr of one device, for $ per 1M output tokens |
+| `deviceHourlyUsd` (top level) | – | $/hr of one device. x `resources.devices` is the pod's $/hr, for $ per 1M output tokens here and in Grafana |
 
 The Job claims its own Trainium device. On a `trn2.3xlarge` (one device),
 uninstall the endpoint first:
 
 ```bash
-helm uninstall $CFG   # trn2.3xlarge only: frees its one device
+helm uninstall $CFG
 helm upgrade --install $CFG-bench vllm-serving -f vllm-serving/values-$CFG.yaml --set mode=bench \
-  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_NEURON_IMAGE \
-  --set bench.deviceHourlyUsd=<$/hr per device>
+  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_NEURON_IMAGE
 
 kubectl logs -f -l app.kubernetes.io/instance=$CFG-bench -c bench --tail=-1
 kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$CFG-bench --timeout=180m
@@ -690,14 +689,13 @@ kubectl wait --for=condition=complete job -l app.kubernetes.io/instance=$CFG-ben
 <summary><b>On GPU</b> (optional)</summary>
 
 The same command with the GPU config and image. The Job runs on its
-own GPU node, so the endpoint can keep running. `bench.deviceHourlyUsd` is the
+own GPU node, so the endpoint can keep running. `deviceHourlyUsd` is the
 node's $/hr, one GPU per p5.4xlarge:
 
 ```bash
 export CFG=gpt-oss-p5-tp1
 helm upgrade --install $CFG-bench vllm-serving -f vllm-serving/values-$CFG.yaml --set mode=bench \
-  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_GPU_IMAGE \
-  --set bench.deviceHourlyUsd=<$/hr of the p5.4xlarge>
+  --set region=$AWS_REGION --set s3Bucket=$S3_BUCKET_NAME --set image=$VLLM_GPU_IMAGE
 ```
 
 </details>
@@ -726,7 +724,7 @@ aws s3 ls --recursive s3://$S3_BUCKET_NAME/benchmarks/vllm-bench/$CFG-bench/
 ```
 
 **Server view: Grafana Dashboards.** Open **Dashboards → Inference → Benchmark**
-(Section 3), pick `$CFG-bench` as the endpoint and set the node's $/hr. It
+(Section 3) and pick `$CFG-bench` as the endpoint. It
 shows what the engine did at each load level, which explains the client
 numbers:
 

@@ -9,6 +9,7 @@ model: gpt-oss-20b
 replicas: 1
 # Stays below the node's allocatable.
 resources: { devices: 1, cpu: "12", memory: 200Gi }
+deviceHourlyUsd: "6.88"   # $/hr per device
 vllm:
   tensorParallelSize: 1
   maxModelLen: 8192

@@ -16,6 +16,10 @@ spec:
   selector:
     matchLabels:
       metrics: enabled
+  # The pod's $/hr (vllm-serving: deviceHourlyUsd x devices) on every series it
+  # exports, as usd_per_hour: the Benchmark dashboards' $ per 1M output tokens.
+  podTargetLabels:
+    - usd-per-hour
   endpoints:
     - port: http
       path: /metrics

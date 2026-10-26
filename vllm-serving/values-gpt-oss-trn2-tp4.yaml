@@ -2,6 +2,7 @@ hardware: neuron
 model: gpt-oss-20b
 replicas: 1
 resources: { devices: 1, cpu: "10", memory: 112Gi }
+deviceHourlyUsd: "2.23"   # $/hr per device
 vllm:
   tensorParallelSize: 4
   maxModelLen: 8192

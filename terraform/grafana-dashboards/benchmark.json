@@ -14,7 +14,7 @@
     "vllm",
     "inference"
   ],
-  "description": "One endpoint (Trainium or GPU) while the benchmark runs. Pick the endpoint and set its node $/hr at the top.",
+  "description": "One endpoint (Trainium or GPU) while the benchmark runs. Pick the endpoint at the top; its $/hr comes from the values file (deviceHourlyUsd x resources.devices).",
   "templating": {
     "list": [
       {
@@ -37,13 +37,20 @@
       },
       {
         "name": "usd_hr",
-        "label": "Node $/hr",
-        "type": "textbox",
-        "query": "40",
-        "current": {
-          "text": "40",
-          "value": "40"
-        }
+        "label": "Pod $/hr",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus-1s"
+        },
+        "query": {
+          "query": "label_values(vllm:num_requests_running{service=\"$endpoint\"}, usd_per_hour)",
+          "refId": "usd_hr"
+        },
+        "definition": "label_values(vllm:num_requests_running{service=\"$endpoint\"}, usd_per_hour)",
+        "refresh": 2,
+        "current": {},
+        "description": "The endpoint's pod $/hr: deviceHourlyUsd x resources.devices from its vllm-serving values file (pod label usd-per-hour). Empty if the values file sets no deviceHourlyUsd."
       }
     ]
   },
@@ -398,7 +405,7 @@
     {
       "type": "stat",
       "title": "$ / 1M out tokens @ peak",
-      "description": "Node $/hr divided by the peak sustained (1-minute) output tokens per hour in the selected time range.",
+      "description": "Pod $/hr x the pods behind the Service (replicas), divided by the peak sustained output tokens per hour in the selected time range. No data if the endpoint's values file sets no deviceHourlyUsd.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-1s"
@@ -437,7 +444,7 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "$usd_hr * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$endpoint\"}[10s])))[$__range:2s]))",
+          "expr": "(vector(0$usd_hr) > 0) * max_over_time(count(count by (pod) (vllm:num_requests_running{service=\"$endpoint\"}))[$__range:15s]) * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$endpoint\"}[10s])))[$__range:2s]))",
           "refId": "A"
         }
       ],

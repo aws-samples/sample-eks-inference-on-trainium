@@ -28,6 +28,21 @@ app: {{ .Release.Name }}
 model: {{ .Values.model }}
 {{- end -}}
 
+{{/* A pod's $/hr: deviceHourlyUsd x resources.devices, "" if unset. */}}
+{{- define "vllm-serving.podHourlyUsd" -}}
+{{- if ne (toString .Values.deviceHourlyUsd) "" -}}
+{{ round (mulf (float64 .Values.deviceHourlyUsd) (float64 .Values.resources.devices)) 4 }}
+{{- end -}}
+{{- end -}}
+
+{{/* Pod label with the pod's $/hr; the metrics-enabled ServiceMonitor copies
+it onto every vLLM metric (usd_per_hour), for the Grafana dashboards' cost. */}}
+{{- define "vllm-serving.costLabel" -}}
+{{- with include "vllm-serving.podHourlyUsd" . -}}
+usd-per-hour: {{ . | quote }}
+{{- end }}
+{{- end -}}
+
 {{/* Pod selector labels */}}
 {{- define "vllm-serving.selectorLabels" -}}
 app: {{ .Release.Name }}
