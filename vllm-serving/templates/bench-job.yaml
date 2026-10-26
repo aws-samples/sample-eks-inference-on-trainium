@@ -29,8 +29,8 @@
 #   3. workloadIters - 2 concurrency levels in between: the latency-throughput
 #      curve, scored against bench.slo with vLLM's goodput.
 # The summary (summary.md) reports all three and the highest-throughput level
-# within the SLA. Results (per-run JSON, summary.csv, summary.md) and this
-# release's serving.json go to s3://<s3Bucket>/benchmarks/vllm-bench/<release>/<timestamp>/.
+# within the SLA. Results (per-run JSON, summary.csv, summary.md) and the
+# serving config they were measured with (serving.json) go to s3://<s3Bucket>/benchmarks/vllm-bench/<release>/<timestamp>/.
 # Runs on the serving devices, so on a single-device node it can't run next to
 # the serve Deployment.
 #
@@ -66,6 +66,25 @@ data:
   bench-cmd: {{ $benchCmd | join "' '" | printf "'%s'" | quote }}
   bench-params.json: |
     {{- toPrettyJson $params | nindent 4 }}
+  # The config this run benchmarked, stored with its results.
+  serving.json: |
+    {{- dict
+      "release" .Release.Name
+      "model" .Values.model
+      "modelId" $dir
+      "image" .Values.image
+      "hardware" .Values.hardware
+      "nodepool" .Values.nodepool
+      "resources" .Values.resources
+      "vllm" .Values.vllm
+      "command" $serveCmd
+      "env" .Values.env
+      "neuron" (ternary .Values.neuron (dict) (eq .Values.hardware "neuron"))
+      "neuronCache" (ternary .Values.neuronCache (dict) (eq .Values.hardware "neuron"))
+      "bench" $b
+      "chart" (printf "%s-%s" .Chart.Name .Chart.Version)
+      "revision" .Release.Revision
+    | toPrettyJson | nindent 4 }}
   summary.py: |
     # summary.csv (one row per run) -> summary.md: latency, max throughput,
     # the latency-throughput curve, and the best level within the SLA.
@@ -181,7 +200,7 @@ spec:
                 --show-stdout \
                 -o "$out" -e "$ts"
               python3 /bench/summary.py "$out/$ts/summary.csv" {{ $hourly | quote }} {{ $b.sloPercent | quote }} | tee "$out/$ts/summary.md"
-              cp /serving-config/serving.json "$out/$ts/"
+              cp /bench/serving.json "$out/$ts/"
               aws s3 cp --recursive --no-progress "$out/$ts/" "s3://{{ .Values.s3Bucket }}/benchmarks/vllm-bench/{{ .Release.Name }}/$ts/"
               echo "==> s3://{{ .Values.s3Bucket }}/benchmarks/vllm-bench/{{ .Release.Name }}/$ts/"
           resources:
@@ -194,8 +213,6 @@ spec:
             {{- include "vllm-serving.volumeMounts" . | nindent 12 }}
             - name: bench
               mountPath: /bench
-            - name: serving-config
-              mountPath: /serving-config
             - name: results
               mountPath: /results
       volumes:
@@ -203,9 +220,6 @@ spec:
         - name: bench
           configMap:
             name: {{ $job }}-bench
-        - name: serving-config
-          configMap:
-            name: {{ .Release.Name }}-serving-config
         - name: results
           emptyDir: {}
 {{- end }}
