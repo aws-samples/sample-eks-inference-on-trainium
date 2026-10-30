@@ -444,7 +444,7 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "(vector(0$usd_hr) > 0) * max_over_time(count(count by (pod) (vllm:num_requests_running{service=\"$endpoint\"}))[$__range:15s]) * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$endpoint\"}[10s])))[$__range:2s]))",
+          "expr": "(vector(0$usd_hr) > 0) * max_over_time(count(count by (pod) (vllm:num_requests_running{service=\"$endpoint\"}))[$__range:15s]) * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$endpoint\"}[5s])))[$__range:1s]))",
           "refId": "A"
         }
       ],

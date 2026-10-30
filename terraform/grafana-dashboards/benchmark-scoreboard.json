@@ -13,7 +13,7 @@
     "vllm",
     "inference"
   ],
-  "description": "Trainium vs GPU side by side while the benchmark runs. Set each node's $/hr in the text boxes.",
+  "description": "Trainium vs GPU side by side while the benchmark runs. Each side's $/hr comes from its values file (deviceHourlyUsd x resources.devices).",
   "templating": {
     "list": [
       {
@@ -92,7 +92,7 @@
       "id": 1,
       "title": "",
       "gridPos": {
-        "h": 2,
+        "h": 3,
         "w": 12,
         "x": 0,
         "y": 0
@@ -107,14 +107,14 @@
       "id": 11,
       "title": "",
       "gridPos": {
-        "h": 2,
+        "h": 3,
         "w": 12,
         "x": 12,
         "y": 0
       },
       "options": {
         "mode": "markdown",
-        "content": "## NVIDIA H100\n`$gpu` · **$${gpu_usd_hr}/hr** per pod"
+        "content": "## NVIDIA GPU\n`$gpu` · **$${gpu_usd_hr}/hr** per pod"
       }
     },
     {
@@ -130,7 +130,7 @@
         "h": 4,
         "w": 2,
         "x": 0,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -178,7 +178,7 @@
         "h": 4,
         "w": 2,
         "x": 2,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -226,7 +226,7 @@
         "h": 4,
         "w": 3,
         "x": 4,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -275,7 +275,7 @@
         "h": 4,
         "w": 3,
         "x": 7,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -324,7 +324,7 @@
         "h": 4,
         "w": 2,
         "x": 10,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -373,7 +373,7 @@
         "h": 4,
         "w": 2,
         "x": 12,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -421,7 +421,7 @@
         "h": 4,
         "w": 2,
         "x": 14,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -469,7 +469,7 @@
         "h": 4,
         "w": 3,
         "x": 16,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -518,7 +518,7 @@
         "h": 4,
         "w": 3,
         "x": 19,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -567,7 +567,7 @@
         "h": 4,
         "w": 2,
         "x": 22,
-        "y": 2
+        "y": 3
       },
       "fieldConfig": {
         "defaults": {
@@ -616,7 +616,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 6
+        "y": 7
       },
       "fieldConfig": {
         "defaults": {
@@ -665,7 +665,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 6
+        "y": 7
       },
       "fieldConfig": {
         "defaults": {
@@ -695,7 +695,7 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[10s])))[$__range:2s])",
+          "expr": "max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[5s])))[$__range:1s])",
           "refId": "A",
           "instant": false
         }
@@ -714,7 +714,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 6
+        "y": 7
       },
       "fieldConfig": {
         "defaults": {
@@ -744,7 +744,7 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "(vector(0$trn2_usd_hr) > 0) * max_over_time(count(count by (pod) (vllm:num_requests_running{service=\"$trn2\"}))[$__range:15s]) * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[10s])))[$__range:2s]))",
+          "expr": "(vector(0$trn2_usd_hr) > 0) * max_over_time(count(count by (pod) (vllm:num_requests_running{service=\"$trn2\"}))[$__range:15s]) * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$trn2\"}[5s])))[$__range:1s]))",
           "refId": "A",
           "instant": false
         }
@@ -763,7 +763,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 6
+        "y": 7
       },
       "fieldConfig": {
         "defaults": {
@@ -812,7 +812,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 6
+        "y": 7
       },
       "fieldConfig": {
         "defaults": {
@@ -842,7 +842,7 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$gpu\"}[10s])))[$__range:2s])",
+          "expr": "max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$gpu\"}[5s])))[$__range:1s])",
           "refId": "A",
           "instant": false
         }
@@ -861,7 +861,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 6
+        "y": 7
       },
       "fieldConfig": {
         "defaults": {
@@ -891,7 +891,7 @@
             "type": "prometheus",
             "uid": "prometheus-1s"
           },
-          "expr": "(vector(0$gpu_usd_hr) > 0) * max_over_time(count(count by (pod) (vllm:num_requests_running{service=\"$gpu\"}))[$__range:15s]) * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$gpu\"}[10s])))[$__range:2s]))",
+          "expr": "(vector(0$gpu_usd_hr) > 0) * max_over_time(count(count by (pod) (vllm:num_requests_running{service=\"$gpu\"}))[$__range:15s]) * 1e6 / (3600 * max_over_time((sum(rate(vllm:generation_tokens_total{service=\"$gpu\"}[5s])))[$__range:1s]))",
           "refId": "A",
           "instant": false
         }
@@ -910,7 +910,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -966,7 +966,7 @@
         "h": 7,
         "w": 6,
         "x": 6,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -1022,7 +1022,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -1078,7 +1078,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 10
+        "y": 11
       },
       "fieldConfig": {
         "defaults": {
@@ -1134,7 +1134,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 17
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -1190,7 +1190,7 @@
         "h": 7,
         "w": 6,
         "x": 6,
-        "y": 17
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -1237,7 +1237,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 17
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -1293,7 +1293,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 17
+        "y": 18
       },
       "fieldConfig": {
         "defaults": {
@@ -1340,7 +1340,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 24
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
@@ -1389,7 +1389,7 @@
         "h": 7,
         "w": 6,
         "x": 6,
-        "y": 24
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
@@ -1447,7 +1447,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 24
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
@@ -1496,7 +1496,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 24
+        "y": 25
       },
       "fieldConfig": {
         "defaults": {
