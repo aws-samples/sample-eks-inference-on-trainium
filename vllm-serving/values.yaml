@@ -49,15 +49,17 @@ vllm:
   tensorParallelSize: 1
   maxModelLen: 8192
   maxNumSeqs: 1
+  # Token budget of one engine step; it means different things per hardware.
+  # Neuron (vllm-neuron) runs segmented prefill: a prompt longer than this is
+  # prefilled in segments over several steps, one request at a time, and decode
+  # never shares a step with prefill. So it only sizes prefill (the largest
+  # compiled prefill bucket): set it to the prompt length, e.g. 512.
+  # GPU (vLLM) runs chunked prefill: each step packs the running decodes (one
+  # token each, up to maxNumSeqs) and prefill chunks into this budget. So it
+  # must fit the prompt tokens to prefill per step on top of the decode tokens:
+  # larger means more prompts prefilled per step.
   maxNumBatchedTokens: 8192
-  # Flags every scenario uses. Prefix caching is off: on Neuron it requires
-  # segmented prefill, which the trn2 files replace with single-shot prefill
-  # buckets (faster in this benchmark), and it's off on GPU too so the flags
-  # stay identical. ShareGPT first turns barely repeat, so it costs no hits.
-  commonArgs:
-    - --no-enable-prefix-caching
-    - --no-disable-hybrid-kv-cache-manager
-  # Hardware-specific flags from the Step 1 table, e.g.
+  # Every other vllm serve flag, set per setup in its values file, e.g.
   #   neuron: --hf-overrides=..., --additional-config=...
   #   gpu:    --dtype=bfloat16
   extraArgs: []

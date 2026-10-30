@@ -27,7 +27,7 @@ The platform underneath covers every area a model endpoint needs:
 | **Model storage** | Weights in S3 (downloaded once from Hugging Face), pulled to node NVMe with the CRT client; a shared EFS compile cache for Neuron graphs |
 | **Serving container** | vLLM with the vLLM Neuron plugin (and Ray Serve, optional), images built into ECR by a CodeBuild pipeline, CVE-scanned on push and pre-pulled onto Trainium nodes |
 | **Compute** | Amazon EKS, Karpenter node pools on demand and on EC2 Capacity Blocks for ML, Trainium devices claimed through the Neuron DRA driver |
-| **Ingress Endpoint** | An internal Application Load Balancer in front of each vLLM service |
+| **Ingress Endpoint** | Optional: an internal Application Load Balancer in front of a vLLM service |
 | **Observability** | Prometheus and Grafana for Neuron hardware and vLLM serving metrics (TTFT, inter-token latency, tokens/s); Fluent Bit to CloudWatch Logs |
 | **Security** | Least-privilege IAM through EKS Pod Identity, private subnets, VPC endpoints for AWS traffic, encrypted storage |
 | **Infrastructure as code** | One Terraform template deploys the platform infrastructure |
@@ -241,8 +241,10 @@ terraform -chdir=terraform apply
 **Endpoint exposure** ([`addons.tf`](terraform/addons.tf))
 
 - **AWS Load Balancer Controller** (EKS Pod Identity): turns Ingresses into
-  Application Load Balancers. The serving chart's Ingress and Grafana's each get
-  an **internal** ALB in the private subnets, reachable only from the VPC.
+  Application Load Balancers. Only the serving chart creates one, when you set
+  `ingress.enabled=true`: an **internal** ALB in the private subnets, reachable
+  only from the VPC. Uninstall such a release before `terraform destroy`
+  ([Section 5](#section-5-teardown)): an ALB left behind blocks the VPC's deletion.
 
 **Observability** ([`observability.tf`](terraform/observability.tf), [`addons.tf`](terraform/addons.tf))
 
@@ -255,8 +257,8 @@ terraform -chdir=terraform apply
   DCGM and Ray, through the ServiceMonitors and PodMonitors in
   [`scrape-configs/`](terraform/scrape-configs/)) and Grafana with the
   dashboards in [`grafana-dashboards/`](terraform/grafana-dashboards/) (vLLM,
-  Neuron, GPU, Ray, Benchmark), on an internal ALB, admin password generated into a
-  Secret.
+  Neuron, GPU, Ray, Benchmark), reached with `kubectl port-forward`, admin
+  password generated into a Secret.
 
 **Logging** ([`logging.tf`](terraform/logging.tf))
 
@@ -607,24 +609,6 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:3000 &
 
 Open <http://localhost:3000>, sign in as `admin` with the password printed above, then **Dashboards → Inference → vLLM**. Send some
 traffic (Section 2, step 2) and watch the latency and load rows react.
-
-**Optional: reach Grafana without port-forwarding.** Grafana also has an
-Ingress on an internal ALB (VPC-only). To open it from your machine, make the
-ALB internet-facing and allow only your IP:
-
-```bash
-MY_IP=$(curl -s https://checkip.amazonaws.com)
-kubectl annotate ingress -n monitoring kube-prometheus-stack-grafana --overwrite \
-  alb.ingress.kubernetes.io/scheme=internet-facing \
-  alb.ingress.kubernetes.io/inbound-cidrs=$MY_IP/32
-kubectl get ingress -n monitoring kube-prometheus-stack-grafana -w
-```
-
-The ALB is replaced in a few minutes, and `ADDRESS` changes to `k8s-...`. Open
-`http://<ADDRESS>` and sign in as above. The listener is plain HTTP, so the
-password crosses the internet unencrypted; only `$MY_IP` can connect. Rerun the
-`annotate` if your IP changes. To close it again, rerun it with
-`scheme=internal` and `inbound-cidrs=10.0.0.0/16` (the VPC).
 
 ## Section 4: Benchmark
 

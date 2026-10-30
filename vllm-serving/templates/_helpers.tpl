@@ -86,7 +86,7 @@ build the same engine config - and on Neuron, the same NEFF cache keys.
   (printf "--max-model-len=%v" $v.maxModelLen)
   (printf "--max-num-seqs=%v" $v.maxNumSeqs)
   (printf "--max-num-batched-tokens=%v" $v.maxNumBatchedTokens) -}}
-{{- concat $argv ($v.commonArgs | default list) ($v.extraArgs | default list) | toJson -}}
+{{- concat $argv ($v.extraArgs | default list) | toJson -}}
 {{- end -}}
 
 {{/*

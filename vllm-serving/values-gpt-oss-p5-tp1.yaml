@@ -15,3 +15,7 @@ vllm:
   maxModelLen: 8192
   maxNumSeqs: 32
   maxNumBatchedTokens: 8192
+  extraArgs:
+    # Prefix caching off, as on the trn2 files: random prompts don't repeat.
+    - --no-enable-prefix-caching
+    - --no-disable-hybrid-kv-cache-manager

@@ -9,6 +9,10 @@ vllm:
   maxNumSeqs: 32
   maxNumBatchedTokens: 512
   extraArgs:
+    # Prefix caching needs segmented prefill on Neuron; single-shot prefill
+    # buckets are faster here, and random prompts don't repeat.
+    - --no-enable-prefix-caching
+    - --no-disable-hybrid-kv-cache-manager
     - '--hf-overrides={"quantization_config": {}}'
     - '--additional-config={"neuron_config": {"decode_context_length_buckets": [512, 1024, 2048, 4096]}}'
 env:

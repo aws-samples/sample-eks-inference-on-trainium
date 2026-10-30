@@ -15,10 +15,8 @@ resource "helm_release" "kube_prometheus_stack" {
   version          = "69.7.4"
   namespace        = "monitoring"
   create_namespace = true
-  # Also makes destroy wait until the release's resources are gone, so the LB
-  # controller (depends_on below) is still running to delete Grafana's ALB.
-  wait    = true
-  timeout = 600
+  wait             = true
+  timeout          = 600
 
   values = [
     <<-EOT
@@ -27,18 +25,9 @@ resource "helm_release" "kube_prometheus_stack" {
       defaultDashboardsEnabled: true
       # No adminPassword: the chart generates a random one into the
       # kube-prometheus-stack-grafana Secret (README: Visualization).
-      # Internal ALB (AWS Load Balancer Controller), reachable only from the VPC.
-      # Part of this release, so `terraform destroy` removes the ALB with it.
+      # No Ingress: reach Grafana with kubectl port-forward.
       ingress:
-        enabled: true
-        ingressClassName: alb
-        hosts: []
-        annotations:
-          alb.ingress.kubernetes.io/scheme: internal
-          alb.ingress.kubernetes.io/target-type: ip
-          alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
-          alb.ingress.kubernetes.io/inbound-cidrs: ${local.vpc_cidr}
-          alb.ingress.kubernetes.io/healthcheck-path: /api/health
+        enabled: false
       # Load every ConfigMap labeled grafana_dashboard=1 (see grafana_dashboards
       # below) into the "Inference" folder.
       sidecar:
@@ -104,8 +93,7 @@ resource "helm_release" "kube_prometheus_stack" {
     EOT
   ]
 
-  # The LB controller must outlive this release on destroy, to delete Grafana's ALB.
-  depends_on = [module.eks, helm_release.aws_load_balancer_controller]
+  depends_on = [module.eks]
 }
 
 ################################################################################
